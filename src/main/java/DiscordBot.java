@@ -12,7 +12,6 @@ import java.net.InetSocketAddress;
 public class DiscordBot {
 
     public static void main(String[] args) {
-        // রেন্ডার বা সিস্টেম থেকে টোকেন নেওয়া
         String token = System.getenv("TOKEN"); 
         
         if (token == null) {
@@ -21,29 +20,26 @@ public class DiscordBot {
         }
 
         try {
-            // রেন্ডারের জন্য ডামি সার্ভার স্টার্ট করা
             startDummyServer();
 
-            // বট ইনিশিয়ালাইজ করা এবং Cogs (WelcomeCog) অ্যাড করা
             JDA jda = JDABuilder.createLight(token)
                 .enableIntents(GatewayIntent.GUILD_MESSAGES, GatewayIntent.MESSAGE_CONTENT)
                 .setActivity(Activity.playing("Server Management"))
-                .addEventListeners(new WelcomeCog()) // এখানে আপনার Cog কানেক্ট করা হয়েছে
+                .addEventListeners(new WelcomeCog()) 
                 .build();
 
-            // বটের কমান্ড গ্লোবালি রেজিস্টার করা
+            // Command registration
             jda.updateCommands().addCommands(
-                Commands.slash("welcome_setup", "ওয়েলকাম সিস্টেম সেটআপ করার ড্যাশবোর্ড খুলুন")
+                Commands.slash("welcome_setup", "Open the welcome setup dashboard")
             ).queue();
             
-            System.out.println("✅ বট সফলভাবে চালু হয়েছে এবং Cogs লোড হয়েছে!");
+            System.out.println("✅ Bot is online and Cogs are loaded!");
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    // রেন্ডারের পোর্ট বাইন্ডিং এরর এড়ানোর জন্য ছোট ওয়েব সার্ভার
     private static void startDummyServer() throws IOException {
         String portStr = System.getenv("PORT");
         int port = (portStr != null) ? Integer.parseInt(portStr) : 8080;
