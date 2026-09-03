@@ -8,7 +8,7 @@ RUN mvn clean package
 # Run stage
 FROM eclipse-temurin:17-jre-jammy
 WORKDIR /app
-# টার্গেট ফোল্ডার থেকে jar ফাইলটি কপি করা হচ্ছে
-COPY --from=build /app/target/*-shaded.jar app.jar
+# টার্গেট ফোল্ডার থেকে আসল jar ফাইলটি কপি করে app.jar নাম দেওয়া হচ্ছে
+COPY --from=build /app/target/discord-bot-1.0-SNAPSHOT.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
