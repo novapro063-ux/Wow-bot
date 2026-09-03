@@ -22,7 +22,7 @@
         </dependency>
     </dependencies>
 
-        <build>
+    <build>
         <plugins>
             <!-- JAR File Builder Plugin -->
             <plugin>
@@ -36,7 +36,6 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <!-- ডুপ্লিকেট ফাইল ও সিগনেচার ইগনোর করার লজিক -->
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -61,4 +60,4 @@
             </plugin>
         </plugins>
     </build>
-         
+</project>
