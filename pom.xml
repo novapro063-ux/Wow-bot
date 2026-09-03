@@ -22,7 +22,7 @@
         </dependency>
     </dependencies>
 
-    <build>
+        <build>
         <plugins>
             <!-- JAR File Builder Plugin -->
             <plugin>
@@ -36,6 +36,20 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <!-- ডুপ্লিকেট ফাইল ও সিগনেচার ইগনোর করার লজিক -->
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/LICENSE</exclude>
+                                        <exclude>META-INF/NOTICE</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>DiscordBot</mainClass> <!-- Main Class Name -->
@@ -47,4 +61,4 @@
             </plugin>
         </plugins>
     </build>
-</project>
+         
