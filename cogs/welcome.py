@@ -29,25 +29,48 @@ def get_config(guild_id: int):
 
 
 # ---------------------------------------------------------
-# SMART MODALS (Grouped Features for Better UX)
+# SELECTION MENU VIEWS (Edits Current Message)
 # ---------------------------------------------------------
-class SetupModal(discord.ui.Modal, title="📢 Basic Setup"):
-    channel_id = discord.ui.TextInput(label="Welcome Channel ID", style=discord.TextStyle.short, placeholder="Paste Channel ID here", required=True)
-    role_id = discord.ui.TextInput(label="Auto-Role ID (Optional)", style=discord.TextStyle.short, placeholder="Paste Role ID or leave empty", required=False)
-    
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.channel_id.default = str(config['channel_id']) if config['channel_id'] else ""
-        self.role_id.default = str(config['auto_role_id']) if config['auto_role_id'] else ""
-        
-    async def on_submit(self, interaction: discord.Interaction):
-        self.config['channel_id'] = self.channel_id.value.strip()
-        self.config['auto_role_id'] = self.role_id.value.strip() if self.role_id.value.strip() else None
-        self.config['is_enabled'] = True
-        await interaction.response.send_message("✅ Basic Setup completed successfully!", ephemeral=True)
+class ChannelSelectView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="Select a channel for welcome messages", row=0)
+    async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        config = get_config(self.guild_id)
+        config['channel_id'] = str(select.values[0].id)
+        config['is_enabled'] = True
+        # Return to Dashboard
+        await interaction.response.edit_message(view=DashboardView(self.guild_id))
+        await interaction.followup.send(f"✅ Welcome channel successfully set to <#{config['channel_id']}>!", ephemeral=True)
+
+    @discord.ui.button(label="🔙 Back to Dashboard", style=discord.ButtonStyle.danger, row=1)
+    async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=DashboardView(self.guild_id))
 
 
+class RoleSelectView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Select an Auto-Role for new members", row=0)
+    async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        config = get_config(self.guild_id)
+        config['auto_role_id'] = str(select.values[0].id)
+        # Return to Dashboard
+        await interaction.response.edit_message(view=DashboardView(self.guild_id))
+        await interaction.followup.send(f"✅ Auto-Role successfully set to <@&{config['auto_role_id']}>!", ephemeral=True)
+
+    @discord.ui.button(label="🔙 Back to Dashboard", style=discord.ButtonStyle.danger, row=1)
+    async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=DashboardView(self.guild_id))
+
+
+# ---------------------------------------------------------
+# MODALS (For Text Inputs)
+# ---------------------------------------------------------
 class DesignModal(discord.ui.Modal, title="🎨 Design Welcome Embed"):
     msg_title = discord.ui.TextInput(label="Welcome Title", style=discord.TextStyle.short, required=True)
     msg_desc = discord.ui.TextInput(label="Welcome Message", style=discord.TextStyle.paragraph, required=True)
@@ -66,8 +89,7 @@ class DesignModal(discord.ui.Modal, title="🎨 Design Welcome Embed"):
 
     async def on_submit(self, interaction: discord.Interaction):
         mode = self.display_mode.value.strip().upper()
-        if mode not in ["BOTH", "IMAGE_ONLY", "TEXT_ONLY"]:
-            mode = "BOTH"
+        if mode not in ["BOTH", "IMAGE_ONLY", "TEXT_ONLY"]: mode = "BOTH"
             
         self.config['welcome_title'] = self.msg_title.value
         self.config['welcome_msg'] = self.msg_desc.value
@@ -98,16 +120,14 @@ class AdvancedModal(discord.ui.Modal, title="🛠️ Advanced Features"):
         self.config['dm_msg'] = self.dm_msg.value
         self.config['ping_enabled'] = self.ping_status.value.strip().lower() == "yes"
         self.config['ping_msg'] = self.ping_msg.value
-        try:
-            self.config['ping_timer'] = int(self.ping_timer.value)
-        except:
-            self.config['ping_timer'] = 3
+        try: self.config['ping_timer'] = int(self.ping_timer.value)
+        except: self.config['ping_timer'] = 3
         await interaction.response.send_message("✅ Advanced features updated successfully!", ephemeral=True)
 
 
 class LinkModal(discord.ui.Modal, title="🔗 Manage Link Buttons"):
     label_input = discord.ui.TextInput(label="Button Label (Exact Name)", style=discord.TextStyle.short, required=True)
-    url_input = discord.ui.TextInput(label="URL (Leave blank to remove this button)", style=discord.TextStyle.short, required=False)
+    url_input = discord.ui.TextInput(label="URL (Leave blank to remove)", style=discord.TextStyle.short, required=False)
 
     def __init__(self, config):
         super().__init__()
@@ -133,7 +153,7 @@ class LinkModal(discord.ui.Modal, title="🔗 Manage Link Buttons"):
 
 
 # ---------------------------------------------------------
-# CLEAN & COMPACT DASHBOARD UI (8 Buttons)
+# CLEAN & COMPACT DASHBOARD UI 
 # ---------------------------------------------------------
 class DashboardView(discord.ui.View):
     def __init__(self, guild_id: int):
@@ -142,53 +162,58 @@ class DashboardView(discord.ui.View):
         config = get_config(guild_id)
 
         if config['is_enabled']:
-            self.btn_toggle.label = "❌ Disable System"
+            self.btn_toggle.label = "❌ Disable"
             self.btn_toggle.style = discord.ButtonStyle.danger
         else:
-            self.btn_toggle.label = "✅ Enable System"
+            self.btn_toggle.label = "✅ Enable"
             self.btn_toggle.style = discord.ButtonStyle.success
 
-    # --- ROW 1 : Core Editors ---
-    @discord.ui.button(label="📢 Setup Basics", style=discord.ButtonStyle.success, row=0)
-    async def btn_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(SetupModal(get_config(self.guild_id)))
+    # --- ROW 0 : Basic Selections & Toggle ---
+    @discord.ui.button(label="📢 Set Channel", style=discord.ButtonStyle.success, row=0)
+    async def btn_set_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=ChannelSelectView(self.guild_id))
 
-    @discord.ui.button(label="🎨 Design Welcome", style=discord.ButtonStyle.primary, row=0)
-    async def btn_design(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DesignModal(get_config(self.guild_id)))
+    @discord.ui.button(label="🎭 Set Auto-Role", style=discord.ButtonStyle.success, row=0)
+    async def btn_auto_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=RoleSelectView(self.guild_id))
 
-    @discord.ui.button(label="🛠️ Advanced Features", style=discord.ButtonStyle.primary, row=0)
-    async def btn_advanced(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AdvancedModal(get_config(self.guild_id)))
-
-    @discord.ui.button(label="🔗 Manage Links", style=discord.ButtonStyle.secondary, row=0)
-    async def btn_links(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LinkModal(get_config(self.guild_id)))
-
-    # --- ROW 2 : Utilities ---
-    @discord.ui.button(label="Toggle", custom_id="btn_toggle", row=1)
+    @discord.ui.button(label="Toggle", custom_id="btn_toggle", row=0)
     async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = get_config(self.guild_id)
         config['is_enabled'] = not config['is_enabled']
         await interaction.response.edit_message(view=DashboardView(self.guild_id))
 
-    @discord.ui.button(label="🧪 Test Welcome", style=discord.ButtonStyle.secondary, row=1)
+    # --- ROW 1 : Design & Advanced ---
+    @discord.ui.button(label="🎨 Design Welcome", style=discord.ButtonStyle.primary, row=1)
+    async def btn_design(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DesignModal(get_config(self.guild_id)))
+
+    @discord.ui.button(label="🛠️ Advanced Features", style=discord.ButtonStyle.primary, row=1)
+    async def btn_advanced(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AdvancedModal(get_config(self.guild_id)))
+
+    @discord.ui.button(label="🔗 Manage Links", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_links(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(LinkModal(get_config(self.guild_id)))
+
+    # --- ROW 2 : Utilities ---
+    @discord.ui.button(label="🧪 Test Welcome", style=discord.ButtonStyle.secondary, row=2)
     async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = get_config(self.guild_id)
         if not config['channel_id']:
-            await interaction.response.send_message("⚠️ Please configure 'Setup Basics' first!", ephemeral=True)
+            await interaction.response.send_message("⚠️ Please configure 'Set Channel' first!", ephemeral=True)
             return
         await interaction.response.send_message(f"✅ Sending a test welcome message...", ephemeral=True)
         cog = interaction.client.get_cog("WelcomeCog")
         await cog.execute_welcome(interaction.guild, interaction.user, config, is_test=True)
 
-    @discord.ui.button(label="📊 View Config", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="📊 View Config", style=discord.ButtonStyle.secondary, row=2)
     async def btn_view_config(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = get_config(self.guild_id)
         embed = discord.Embed(title="📊 Dashboard Configuration", color=discord.Color.from_str("#2b2d31"))
         embed.add_field(name="System Status", value="✅ Enabled" if config['is_enabled'] else "❌ Disabled")
-        embed.add_field(name="Channel ID", value=config['channel_id'] if config['channel_id'] else "None")
-        embed.add_field(name="Auto-Role ID", value=config['auto_role_id'] if config['auto_role_id'] else "None")
+        embed.add_field(name="Channel ID", value=f"<#{config['channel_id']}>" if config['channel_id'] else "None")
+        embed.add_field(name="Auto-Role ID", value=f"<@&{config['auto_role_id']}>" if config['auto_role_id'] else "None")
         embed.add_field(name="Display Mode", value=config['display_mode'])
         embed.add_field(name="DM Enabled", value="Yes" if config['dm_enabled'] else "No")
         embed.add_field(name="Ping Enabled", value="Yes" if config['ping_enabled'] else "No")
@@ -197,7 +222,7 @@ class DashboardView(discord.ui.View):
         embed.add_field(name="Active Buttons", value=links, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📋 Placeholders", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="📋 Placeholders", style=discord.ButtonStyle.secondary, row=2)
     async def btn_placeholders(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="📋 Available Placeholders",
@@ -227,7 +252,8 @@ class WelcomeCog(commands.Cog):
         embed = discord.Embed(
             title="⚙️ Ultimate Welcome System",
             description="Use the compact buttons below to fully configure the welcome system.\n\n"
-                        "🔹 **Setup Basics:** Channel & Role\n"
+                        "🔹 **Set Channel:** Where to send welcome messages\n"
+                        "🔹 **Set Auto-Role:** Role given on join\n"
                         "🔹 **Design Welcome:** Message, Color & BG\n"
                         "🔹 **Advanced:** DM & Ping Settings\n"
                         "🔹 **Manage Links:** Add or Remove buttons",
@@ -311,4 +337,4 @@ class WelcomeCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(WelcomeCog(bot))
-                       
+    
