@@ -1,15 +1,33 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import json
+import os
 
 # ---------------------------------------------------------
-# DATABASE (In-Memory Configuration)
+# PERMANENT JSON DATABASE SYSTEM
 # ---------------------------------------------------------
-server_configs = {}
+DB_FILE = "server_configs.json"
+
+def load_configs():
+    if not os.path.exists(DB_FILE):
+        return {}
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_configs(configs):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(configs, f, indent=4)
 
 def get_config(guild_id: int):
-    if guild_id not in server_configs:
-        server_configs[guild_id] = {
+    configs = load_configs()
+    g_id = str(guild_id) # JSON keys are always strings
+    
+    if g_id not in configs:
+        configs[g_id] = {
             "is_enabled": False,
             "channel_id": None,
             "auto_role_id": None,
@@ -26,7 +44,14 @@ def get_config(guild_id: int):
             "ping_msg": "Welcome {user_mention}!",
             "ping_timer": 3,
         }
-    return server_configs[guild_id]
+        save_configs(configs)
+    return configs[g_id]
+
+def update_config(guild_id: int, new_config: dict):
+    configs = load_configs()
+    configs[str(guild_id)] = new_config
+    save_configs(configs)
+
 
 # ---------------------------------------------------------
 # SINGLE COMPACT EMBED GENERATOR
@@ -71,11 +96,13 @@ class ChannelSelectView(discord.ui.View):
         config = get_config(self.guild_id)
         if self.is_ping:
             config['ping_channel_id'] = str(select.values[0].id)
+            update_config(self.guild_id, config)
             await interaction.response.edit_message(embed=get_dashboard_embed(config), view=DashboardView(self.guild_id))
             await interaction.followup.send(f"✅ Ping Channel set to <#{config['ping_channel_id']}>!", ephemeral=True)
         else:
             config['channel_id'] = str(select.values[0].id)
             config['is_enabled'] = True
+            update_config(self.guild_id, config)
             await interaction.response.edit_message(embed=get_dashboard_embed(config), view=DashboardView(self.guild_id))
             await interaction.followup.send(f"✅ Welcome Channel set to <#{config['channel_id']}>!", ephemeral=True)
 
@@ -93,6 +120,7 @@ class RoleSelectView(discord.ui.View):
     async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
         config = get_config(self.guild_id)
         config['auto_role_id'] = str(select.values[0].id)
+        update_config(self.guild_id, config)
         await interaction.response.edit_message(embed=get_dashboard_embed(config), view=DashboardView(self.guild_id))
         await interaction.followup.send(f"✅ Auto-Role set to <@&{config['auto_role_id']}>!", ephemeral=True)
 
@@ -122,6 +150,7 @@ class ColorSelectView(discord.ui.View):
     async def select_color(self, interaction: discord.Interaction, select: discord.ui.Select):
         config = get_config(self.guild_id)
         config['accent_color'] = select.values[0]
+        update_config(self.guild_id, config)
         await interaction.response.edit_message(embed=get_dashboard_embed(config), view=DashboardView(self.guild_id))
         await interaction.followup.send(f"✅ Accent Color set to {select.values[0]}!", ephemeral=True)
 
@@ -151,6 +180,7 @@ class TextAndModeModal(discord.ui.Modal, title="✏️ Edit Text & Mode"):
         self.config['display_mode'] = mode
         self.config['welcome_title'] = self.msg_title.value
         self.config['welcome_msg'] = self.msg_desc.value
+        update_config(interaction.guild.id, self.config)
         await interaction.response.edit_message(embed=get_dashboard_embed(self.config), view=DashboardView(interaction.guild.id))
         await interaction.followup.send("✅ Text & Display Mode updated!", ephemeral=True)
 
@@ -162,6 +192,7 @@ class BackgroundModal(discord.ui.Modal, title="🖼️ Set Background Image"):
         self.bg_url.default = config['bg_url']
     async def on_submit(self, interaction: discord.Interaction):
         self.config['bg_url'] = self.bg_url.value
+        update_config(interaction.guild.id, self.config)
         await interaction.response.edit_message(embed=get_dashboard_embed(self.config), view=DashboardView(interaction.guild.id))
         await interaction.followup.send("✅ Background updated!", ephemeral=True)
 
@@ -180,6 +211,7 @@ class PingSettingsModal(discord.ui.Modal, title="⏱️ Ping Settings"):
         self.config['ping_msg'] = self.ping_msg.value
         try: self.config['ping_timer'] = int(self.ping_timer.value)
         except: self.config['ping_timer'] = 3
+        update_config(interaction.guild.id, self.config)
         await interaction.response.edit_message(embed=get_dashboard_embed(self.config), view=DashboardView(interaction.guild.id))
         await interaction.followup.send("✅ Ping settings updated!", ephemeral=True)
 
@@ -194,6 +226,7 @@ class DMModal(discord.ui.Modal, title="✉️ DM Welcome"):
     async def on_submit(self, interaction: discord.Interaction):
         self.config['dm_enabled'] = self.dm_status.value.strip().lower() == "yes"
         self.config['dm_msg'] = self.dm_msg.value
+        update_config(interaction.guild.id, self.config)
         await interaction.response.edit_message(embed=get_dashboard_embed(self.config), view=DashboardView(interaction.guild.id))
         await interaction.followup.send("✅ DM settings updated!", ephemeral=True)
 
@@ -219,6 +252,7 @@ class LinkModal(discord.ui.Modal, title="🔗 Manage Link Buttons"):
             if not url.startswith("http"): url = "https://" + url
             self.config['links'][label] = url
         
+        update_config(interaction.guild.id, self.config)
         await interaction.response.edit_message(embed=get_dashboard_embed(self.config), view=DashboardView(interaction.guild.id))
         await interaction.followup.send("✅ Links updated successfully!", ephemeral=True)
 
@@ -232,7 +266,6 @@ class DashboardView(discord.ui.View):
         self.guild_id = guild_id
         config = get_config(guild_id)
         
-        # Dynamic Toggle button
         if config['is_enabled']:
             self.btn_toggle.label = "❌ Disable"
             self.btn_toggle.style = discord.ButtonStyle.danger
@@ -253,6 +286,7 @@ class DashboardView(discord.ui.View):
     async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = get_config(self.guild_id)
         config['is_enabled'] = not config['is_enabled']
+        update_config(self.guild_id, config)
         await interaction.response.edit_message(embed=get_dashboard_embed(config), view=DashboardView(self.guild_id))
 
     @discord.ui.button(label="🧪 Test", style=discord.ButtonStyle.secondary, row=0)
