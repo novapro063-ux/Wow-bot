@@ -1,35 +1,57 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import json
+import os
 
 # ---------------------------------------------------------
-# DATABASE (In-Memory Configuration for Leave)
+# JSON DATABASE SETUP
 # ---------------------------------------------------------
-leave_configs = {}
+DATA_FILE = "leave_configs.json"
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w") as f:
+            json.dump({}, f)
+    with open(DATA_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except:
+            return {}
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 def get_leave_config(guild_id: int):
-    if guild_id not in leave_configs:
-        leave_configs[guild_id] = {
+    data = load_data()
+    g_id = str(guild_id) # JSON keys are strings
+    
+    if g_id not in data:
+        data[g_id] = {
             "is_enabled": False,
             "channel_id": None,
-            
             "display_mode": "BOTH",
             "leave_title": "**Goodbye, {user_name}!**",
             "leave_msg": "We are sad to see you go, {user_name}.\n\nWe are now down to **{member_count}** members.",
-            "bg_url": "https://cdn.discordapp.com/attachments/1509733741302382670/1545129390063616010/tenor.gif?ex=6a9b0561&is=6a99b3e1&hm=78d4c8db38a5523aa3eba51b1f350c1d68a010313875874e31ded09a37f23e63&",
-            "accent_color": "#ED4245", # Red default for leave
-            
+            "bg_url": "https://cdn.discordapp.com/attachments/1540982071432978594/1545675007072407573/images_3.jpg?ex=6a9d0186&is=6a9bb006&hm=fd7bd230959c383c0dbd797a5136fc7353ee19780e2cee2d9bcfdbaca7618909&",
+            "accent_color": "#ED4245",
             "links": {}, 
-            
             "ping_enabled": False,
             "ping_channel_id": None,
             "ping_msg": "{user_name} just left the server.",
             "ping_timer": 3,
         }
-    return leave_configs[guild_id]
+        save_data(data)
+    return data[g_id]
+
+def save_leave_config(guild_id: int, config: dict):
+    data = load_data()
+    data[str(guild_id)] = config
+    save_data(data)
 
 # ---------------------------------------------------------
-# SINGLE COMPACT EMBED GENERATOR
+# COMPACT EMBED GENERATOR
 # ---------------------------------------------------------
 def get_leave_dashboard_embed(config):
     try: color = discord.Color.from_str(config['accent_color'])
@@ -37,17 +59,14 @@ def get_leave_dashboard_embed(config):
         
     embed = discord.Embed(title="⚙️ Leave Setup Dashboard", color=color)
     
-    # Core Summary
     status = "✅ On" if config['is_enabled'] else "❌ Off"
     ch = f"<#{config['channel_id']}>" if config['channel_id'] else "None"
     embed.add_field(name="📌 Core Setup", value=f"**Status:** {status}\n**Channel:** {ch}", inline=True)
     
-    # Design Summary
     mode = config['display_mode']
     bg_stat = "Custom" if config['bg_url'] else "Default"
     embed.add_field(name="🎨 Aesthetics", value=f"**Mode:** {mode}\n**Color:** {config['accent_color']}\n**Image:** {bg_stat}", inline=True)
     
-    # Advanced Summary
     ping_ch = f"<#{config['ping_channel_id']}>" if config['ping_channel_id'] else "None"
     ping_stat = f"On ({config['ping_timer']}s)" if config['ping_enabled'] else "Off"
     embed.add_field(name="🛠️ Advanced", value=f"**Links:** {len(config['links'])}/5\n**Ping Ch:** {ping_ch}\n**Ping System:** {ping_stat}", inline=False)
@@ -56,7 +75,7 @@ def get_leave_dashboard_embed(config):
 
 
 # ---------------------------------------------------------
-# SELECTION MENUS (Channel, Color)
+# SELECTION MENUS
 # ---------------------------------------------------------
 class LeaveChannelSelectView(discord.ui.View):
     def __init__(self, guild_id: int, is_ping: bool = False):
@@ -69,11 +88,13 @@ class LeaveChannelSelectView(discord.ui.View):
         config = get_leave_config(self.guild_id)
         if self.is_ping:
             config['ping_channel_id'] = str(select.values[0].id)
+            save_leave_config(self.guild_id, config)
             await interaction.response.edit_message(embed=get_leave_dashboard_embed(config), view=LeaveDashboardView(self.guild_id))
             await interaction.followup.send(f"✅ Leave Ping Channel set to <#{config['ping_channel_id']}>!", ephemeral=True)
         else:
             config['channel_id'] = str(select.values[0].id)
             config['is_enabled'] = True
+            save_leave_config(self.guild_id, config)
             await interaction.response.edit_message(embed=get_leave_dashboard_embed(config), view=LeaveDashboardView(self.guild_id))
             await interaction.followup.send(f"✅ Leave Channel set to <#{config['channel_id']}>!", ephemeral=True)
 
@@ -103,6 +124,7 @@ class LeaveColorSelectView(discord.ui.View):
     async def select_color(self, interaction: discord.Interaction, select: discord.ui.Select):
         config = get_leave_config(self.guild_id)
         config['accent_color'] = select.values[0]
+        save_leave_config(self.guild_id, config)
         await interaction.response.edit_message(embed=get_leave_dashboard_embed(config), view=LeaveDashboardView(self.guild_id))
         await interaction.followup.send(f"✅ Accent Color set to {select.values[0]}!", ephemeral=True)
 
@@ -119,8 +141,9 @@ class LeaveTextAndModeModal(discord.ui.Modal, title="✏️ Edit Text & Mode"):
     msg_title = discord.ui.TextInput(label="Leave Title", style=discord.TextStyle.short, required=True)
     msg_desc = discord.ui.TextInput(label="Leave Message", style=discord.TextStyle.paragraph, required=True)
 
-    def __init__(self, config):
+    def __init__(self, guild_id: int, config: dict):
         super().__init__()
+        self.guild_id = guild_id
         self.config = config
         self.display_mode.default = config['display_mode']
         self.msg_title.default = config['leave_title']
@@ -132,44 +155,56 @@ class LeaveTextAndModeModal(discord.ui.Modal, title="✏️ Edit Text & Mode"):
         self.config['display_mode'] = mode
         self.config['leave_title'] = self.msg_title.value
         self.config['leave_msg'] = self.msg_desc.value
-        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(interaction.guild.id))
+        save_leave_config(self.guild_id, self.config)
+        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(self.guild_id))
         await interaction.followup.send("✅ Text & Display Mode updated!", ephemeral=True)
 
 class LeaveBackgroundModal(discord.ui.Modal, title="🖼️ Set Background Image"):
     bg_url = discord.ui.TextInput(label="Image/GIF URL", style=discord.TextStyle.short, required=True)
-    def __init__(self, config):
+    
+    def __init__(self, guild_id: int, config: dict):
         super().__init__()
+        self.guild_id = guild_id
         self.config = config
         self.bg_url.default = config['bg_url']
+        
     async def on_submit(self, interaction: discord.Interaction):
         self.config['bg_url'] = self.bg_url.value
-        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(interaction.guild.id))
+        save_leave_config(self.guild_id, self.config)
+        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(self.guild_id))
         await interaction.followup.send("✅ Background updated!", ephemeral=True)
 
 class LeavePingSettingsModal(discord.ui.Modal, title="⏱️ Ping Settings"):
     ping_status = discord.ui.TextInput(label="Enable Ping? (yes/no)", style=discord.TextStyle.short, required=True)
     ping_msg = discord.ui.TextInput(label="Ping Message", style=discord.TextStyle.short, required=True)
     ping_timer = discord.ui.TextInput(label="Delete After (Seconds)", style=discord.TextStyle.short, required=True)
-    def __init__(self, config):
+    
+    def __init__(self, guild_id: int, config: dict):
         super().__init__()
+        self.guild_id = guild_id
         self.config = config
         self.ping_status.default = "yes" if config['ping_enabled'] else "no"
         self.ping_msg.default = config['ping_msg']
         self.ping_timer.default = str(config['ping_timer'])
+        
     async def on_submit(self, interaction: discord.Interaction):
         self.config['ping_enabled'] = self.ping_status.value.strip().lower() == "yes"
         self.config['ping_msg'] = self.ping_msg.value
         try: self.config['ping_timer'] = int(self.ping_timer.value)
         except: self.config['ping_timer'] = 3
-        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(interaction.guild.id))
+        save_leave_config(self.guild_id, self.config)
+        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(self.guild_id))
         await interaction.followup.send("✅ Ping settings updated!", ephemeral=True)
 
 class LeaveLinkModal(discord.ui.Modal, title="🔗 Manage Link Buttons"):
     label_input = discord.ui.TextInput(label="Button Label (Exact Name)", style=discord.TextStyle.short, required=True)
     url_input = discord.ui.TextInput(label="URL (Leave blank to remove)", style=discord.TextStyle.short, required=False)
-    def __init__(self, config):
+    
+    def __init__(self, guild_id: int, config: dict):
         super().__init__()
+        self.guild_id = guild_id
         self.config = config
+        
     async def on_submit(self, interaction: discord.Interaction):
         label = self.label_input.value.strip()
         url = self.url_input.value.strip()
@@ -186,12 +221,13 @@ class LeaveLinkModal(discord.ui.Modal, title="🔗 Manage Link Buttons"):
             if not url.startswith("http"): url = "https://" + url
             self.config['links'][label] = url
         
-        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(interaction.guild.id))
+        save_leave_config(self.guild_id, self.config)
+        await interaction.response.edit_message(embed=get_leave_dashboard_embed(self.config), view=LeaveDashboardView(self.guild_id))
         await interaction.followup.send("✅ Links updated successfully!", ephemeral=True)
 
 
 # ---------------------------------------------------------
-# SINGLE DASHBOARD VIEW (Compact Setup)
+# SINGLE DASHBOARD VIEW
 # ---------------------------------------------------------
 class LeaveDashboardView(discord.ui.View):
     def __init__(self, guild_id: int):
@@ -215,6 +251,7 @@ class LeaveDashboardView(discord.ui.View):
     async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = get_leave_config(self.guild_id)
         config['is_enabled'] = not config['is_enabled']
+        save_leave_config(self.guild_id, config)
         await interaction.response.edit_message(embed=get_leave_dashboard_embed(config), view=LeaveDashboardView(self.guild_id))
 
     @discord.ui.button(label="🧪 Test", style=discord.ButtonStyle.secondary, row=0)
@@ -229,11 +266,11 @@ class LeaveDashboardView(discord.ui.View):
     # --- ROW 1: Design Settings ---
     @discord.ui.button(label="✏️ Text/Mode", style=discord.ButtonStyle.primary, row=1)
     async def btn_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LeaveTextAndModeModal(get_leave_config(self.guild_id)))
+        await interaction.response.send_modal(LeaveTextAndModeModal(self.guild_id, get_leave_config(self.guild_id)))
 
     @discord.ui.button(label="🖼️ Background", style=discord.ButtonStyle.primary, row=1)
     async def btn_bg(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LeaveBackgroundModal(get_leave_config(self.guild_id)))
+        await interaction.response.send_modal(LeaveBackgroundModal(self.guild_id, get_leave_config(self.guild_id)))
 
     @discord.ui.button(label="🎨 Color", style=discord.ButtonStyle.primary, row=1)
     async def btn_color(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -246,7 +283,7 @@ class LeaveDashboardView(discord.ui.View):
             description=(
                 "`{display_name}` - Display name\n"
                 "`{user_name}` - Username (Safest for leaves)\n"
-                "`{user_mention}` - Might not resolve if they left entirely\n"
+                "`{user_mention}` - Might not resolve perfectly\n"
                 "`{user_id}` - User's ID\n\n"
                 "`{server_name}` - Server's name\n"
                 "`{member_count}` - Total count after leaving\n"
@@ -258,7 +295,7 @@ class LeaveDashboardView(discord.ui.View):
     # --- ROW 2: Advanced Settings ---
     @discord.ui.button(label="🔗 Links", style=discord.ButtonStyle.secondary, row=2)
     async def btn_links(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LeaveLinkModal(get_leave_config(self.guild_id)))
+        await interaction.response.send_modal(LeaveLinkModal(self.guild_id, get_leave_config(self.guild_id)))
 
     @discord.ui.button(label="📌 Ping Ch.", style=discord.ButtonStyle.primary, row=2)
     async def btn_ping_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -266,7 +303,7 @@ class LeaveDashboardView(discord.ui.View):
 
     @discord.ui.button(label="⏱️ Ping Setup", style=discord.ButtonStyle.primary, row=2)
     async def btn_ping_settings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(LeavePingSettingsModal(get_leave_config(self.guild_id)))
+        await interaction.response.send_modal(LeavePingSettingsModal(self.guild_id, get_leave_config(self.guild_id)))
 
 
 # ---------------------------------------------------------
@@ -343,4 +380,4 @@ class LeaveCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(LeaveCog(bot))
-          
+                                  
