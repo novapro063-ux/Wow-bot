@@ -40,5 +40,5 @@ class GiveawayCog(commands.Cog):
             await interaction.followup.send("✅ Winners announced in the channel (Note: Could not find the original message ID).")
 
 async def setup(bot):
-    await bot.add_cog(GiveawayCog(bot))
+    await bot.add_cog(GivewinCog(bot))
   
