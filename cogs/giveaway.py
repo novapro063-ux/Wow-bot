@@ -26,7 +26,6 @@ def load_giveaways():
 def save_giveaways(data):
     with open(DB_FILE, "w", encoding="utf-8") as f: json.dump(data, f, indent=4)
 
-# Convert duration string (e.g., "1d", "5h", "30m") to seconds
 def parse_time(time_str: str) -> int:
     time_str = time_str.lower().replace(" ", "")
     regex = re.compile(r'((?P<days>\d+)d)?((?P<hours>\d+)h)?((?P<minutes>\d+)m)?((?P<seconds>\d+)s)?')
@@ -170,7 +169,6 @@ class GiveawaySelect(discord.ui.Select):
         options = []
         for gw_id, info in data.items():
             if info["guild_id"] == guild.id and not info["is_ended"]:
-                # Limit to 25 active giveaways for menu
                 if len(options) >= 25: break
                 options.append(discord.SelectOption(label=info["prize"], description=f"ID: {gw_id}", value=gw_id, emoji="🎁"))
         
@@ -227,7 +225,7 @@ class DashboardView(discord.ui.View):
 
 
 # ---------------------------------------------------------
-# MAIN COG & BACKGROUND TASKS
+# MAIN COG & OFFLINE-PROOF TASKS
 # ---------------------------------------------------------
 class GiveawayCog(commands.Cog):
     def __init__(self, bot):
@@ -242,20 +240,21 @@ class GiveawayCog(commands.Cog):
     async def gstart(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=get_dashboard_embed(), view=DashboardView(interaction.guild), ephemeral=True)
 
+    # 15 সেকেন্ড পর পর চেক করবে। বট অফলাইন থেকে অনলাইনে আসলেও এটি সাথে সাথে চেক শুরু করে।
     @tasks.loop(seconds=15)
     async def giveaway_checker(self):
         data = load_giveaways()
         current_time = int(time.time())
-        updated = False
 
         for gw_id, info in list(data.items()):
             if not info["is_ended"] and current_time >= info["end_time"]:
                 guild = self.bot.get_guild(info["guild_id"])
                 if guild:
-                    await self.end_giveaway(guild, gw_id)
-                    updated = True
-        if updated:
-            save_giveaways(load_giveaways()) # Ensure it's saved in loop
+                    # ক্র্যাশ থেকে বাঁচার জন্য try-except ব্যবহার করা হয়েছে
+                    try:
+                        await self.end_giveaway(guild, gw_id)
+                    except Exception as e:
+                        print(f"Loop End Warning for {gw_id}: {e}")
 
     @giveaway_checker.before_loop
     async def before_checker(self):
@@ -268,8 +267,19 @@ class GiveawayCog(commands.Cog):
         
         try:
             channel = guild.get_channel(gw["channel_id"])
-            if not channel: return
-            msg = await channel.fetch_message(int(gw_id))
+            if not channel: 
+                # চ্যানেল না পেলে ডাটাবেসে ended মার্ক করে দেবে, নাহলে লুপ চলতে থাকবে।
+                gw["is_ended"] = True
+                save_giveaways(data)
+                return
+                
+            try:
+                msg = await channel.fetch_message(int(gw_id))
+            except discord.NotFound:
+                # যদি কেউ ভুলে গিভঅ্যাওয়ে মেসেজ ডিলিট করে দেয়
+                gw["is_ended"] = True
+                save_giveaways(data)
+                return
             
             # Find the correct reaction users
             users = []
@@ -310,4 +320,4 @@ class GiveawayCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(GiveawayCog(bot))
-  
+        
