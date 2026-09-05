@@ -9,6 +9,11 @@ import datetime
 import asyncio
 
 # ---------------------------------------------------------
+# DEVELOPER / SUPER ADMIN ID
+# ---------------------------------------------------------
+MY_USER_ID = 1313370345851457569
+
+# ---------------------------------------------------------
 # JSON DATABASE SETUP FOR ANTI-LINK
 # ---------------------------------------------------------
 DATA_FILE = "anti_link_configs.json"
@@ -242,15 +247,18 @@ class AntiLinkCog(commands.Cog):
     @app_commands.command(name="antilink_setup", description="Open the Ultimate Anti-Link Dashboard")
     @app_commands.default_permissions(administrator=True)
     async def antilink_setup(self, interaction: discord.Interaction):
-        if interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message("❌ Only the Server Owner can configure Anti-Link!", ephemeral=True)
+        # ONLY Server Owner AND Developer (You) can open this dashboard
+        if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
+            await interaction.response.send_message("❌ Only the Server Owner or Bot Developer can configure Anti-Link!", ephemeral=True)
             return
+            
         config = get_link_config(interaction.guild.id)
         await interaction.response.send_message(embed=get_link_embed(config), view=AntiLinkView(interaction.guild.id), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if not message.guild or message.author.bot or message.author.id == message.guild.owner_id:
+        # Ignore DMs, bots, Server Owner, and YOU (Bot Developer)
+        if not message.guild or message.author.bot or message.author.id == message.guild.owner_id or message.author.id == MY_USER_ID:
             return
 
         config = get_link_config(message.guild.id)
@@ -309,4 +317,4 @@ class AntiLinkCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(AntiLinkCog(bot))
-      
+    
