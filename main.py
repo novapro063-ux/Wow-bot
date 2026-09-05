@@ -9,17 +9,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------
-# WEB SERVER FOR RENDER (Keeps the bot alive)
+# WEB SERVER FOR RENDER (Keeps the bot alive safely)
 # ---------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Discord Bot is Online and Running on Render!"
+    return "Discord Bot is Online and Running smoothly on Render!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    # Using waitress instead of Flask's default dev server to remove warnings
+    from waitress import serve
+    serve(app, host='0.0.0.0', port=port)
 
 # ---------------------------------------------------------
 # BOT SETUP & COG LOADER
@@ -46,7 +48,7 @@ class UltimateBot(commands.Bot):
 
 
 if __name__ == "__main__":
-    # Start the Flask web server in a background thread
+    # Start the web server in a background thread
     threading.Thread(target=run_server, daemon=True).start()
     
     # Start the Discord Bot
@@ -56,4 +58,4 @@ if __name__ == "__main__":
     else:
         bot = UltimateBot()
         bot.run(token)
-      
+        
