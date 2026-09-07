@@ -64,8 +64,12 @@ def get_manager_embed(channel: discord.abc.GuildChannel = None, role: discord.Ro
 
     embed.description = f"**Target Channel:** {channel.mention}\n**Target Role:** {role.mention}"
     
-    # Get current permissions
-    overwrite = channel.overwrites_for(role)
+    # Get current permissions (Bug Fixed: Using actual Discord objects now)
+    try:
+        overwrite = channel.overwrites_for(role)
+    except Exception as e:
+        embed.description += f"\n\n❌ **Error loading permissions:** {e}"
+        return embed
     
     # Text Permissions Column
     text_str = ""
@@ -89,7 +93,7 @@ def get_manager_embed(channel: discord.abc.GuildChannel = None, role: discord.Ro
 
 
 # ---------------------------------------------------------
-# MAIN INTERACTIVE VIEW (Bug Fixed)
+# MAIN INTERACTIVE VIEW (Fully Fixed)
 # ---------------------------------------------------------
 class ChannelManagerView(discord.ui.View):
     def __init__(self, guild: discord.Guild):
@@ -107,40 +111,53 @@ class ChannelManagerView(discord.ui.View):
         has_perms = len(self.selected_text_perms) > 0 or len(self.selected_voice_perms) > 0
 
         for child in self.children:
-            if getattr(child, "custom_id", "") in ["sel_text", "sel_voice"]:
+            custom_id = getattr(child, "custom_id", "")
+            if custom_id in ["sel_text", "sel_voice"]:
                 child.disabled = not is_ready
-            elif getattr(child, "custom_id", "") in ["btn_allow", "btn_deny", "btn_reset"]:
+            elif custom_id in ["btn_allow", "btn_deny", "btn_reset"]:
                 child.disabled = not (is_ready and has_perms)
 
-    # ROW 0
+    # ROW 0: Channel Selection
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="1️⃣ Select a Channel", custom_id="sel_chan", row=0)
     async def channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        self.target_channel = select.values[0]
+        # BUG FIX: Get actual Channel object using ID
+        self.target_channel = self.guild.get_channel(select.values[0].id)
+        
+        if not self.target_channel:
+            await interaction.response.send_message("❌ Error: Could not resolve channel.", ephemeral=True)
+            return
+            
         self.update_action_buttons()
         await interaction.response.edit_message(embed=get_manager_embed(self.target_channel, self.target_role), view=self)
 
-    # ROW 1
+    # ROW 1: Role Selection
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="2️⃣ Select a Specific Role (Skip if @everyone)", custom_id="sel_role", row=1)
     async def role_select(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        self.target_role = select.values[0]
+        # BUG FIX: Get actual Role object using ID
+        self.target_role = self.guild.get_role(select.values[0].id)
+        
+        if not self.target_role:
+            await interaction.response.send_message("❌ Error: Could not resolve role.", ephemeral=True)
+            return
+            
         self.update_action_buttons()
         await interaction.response.edit_message(embed=get_manager_embed(self.target_channel, self.target_role), view=self)
 
-    # ROW 2
+    # ROW 2: Text Permissions
     @discord.ui.select(placeholder="📝 Select Text & General Perms", options=TEXT_GENERAL_PERMS, min_values=1, max_values=len(TEXT_GENERAL_PERMS), custom_id="sel_text", row=2)
     async def text_perm_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.selected_text_perms = select.values
         self.update_action_buttons()
         await interaction.response.edit_message(view=self)
 
-    # ROW 3
+    # ROW 3: Voice Permissions
     @discord.ui.select(placeholder="🎙️ Select Voice & Event Perms", options=VOICE_EVENT_PERMS, min_values=1, max_values=len(VOICE_EVENT_PERMS), custom_id="sel_voice", row=3)
     async def voice_perm_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.selected_voice_perms = select.values
         self.update_action_buttons()
         await interaction.response.edit_message(view=self)
 
-    # ROW 4 (Buttons)
+    # ROW 4: Action Buttons
     @discord.ui.button(label="@everyone", style=discord.ButtonStyle.primary, emoji="🌍", custom_id="btn_everyone", row=4)
     async def btn_everyone(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.target_channel:
@@ -152,9 +169,6 @@ class ChannelManagerView(discord.ui.View):
         await interaction.response.edit_message(embed=get_manager_embed(self.target_channel, self.target_role), view=self)
 
     async def apply_permissions(self, interaction: discord.Interaction, perm_value: typing.Optional[bool], action_name: str):
-        # Using defer for API call safety
-        await interaction.response.defer(ephemeral=True) 
-        
         all_selected_perms = self.selected_text_perms + self.selected_voice_perms
         if not self.target_channel or not self.target_role or not all_selected_perms:
             return
@@ -166,18 +180,18 @@ class ChannelManagerView(discord.ui.View):
             
             await self.target_channel.set_permissions(self.target_role, overwrite=overwrite, reason=f"Advanced Manager by {interaction.user}")
             
-            # Reset selections securely
+            # Reset memory safely
             self.selected_text_perms = []
             self.selected_voice_perms = []
             self.update_action_buttons()
             
-            await interaction.edit_original_response(embed=get_manager_embed(self.target_channel, self.target_role), view=self)
+            await interaction.response.edit_message(embed=get_manager_embed(self.target_channel, self.target_role), view=self)
             await interaction.followup.send(f"✅ Successfully set **{len(kwargs)}** permissions to **{action_name}** for {self.target_role.mention}!", ephemeral=True)
             
         except discord.Forbidden:
-            await interaction.followup.send("❌ I am missing permissions! Please move my bot role higher.", ephemeral=True)
+            await interaction.response.send_message("❌ I am missing permissions! Please move my bot role higher.", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ An error occurred: {e}", ephemeral=True)
 
     @discord.ui.button(label="Allow", style=discord.ButtonStyle.success, emoji="✅", custom_id="btn_allow", row=4)
     async def btn_allow(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -199,25 +213,21 @@ class ChannelManagerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="channel_manager", description="Open the Ultimate Channel Permission Manager (All 35 Perms)")
+    @app_commands.command(name="channel_manager", description="Open the Ultimate Channel Permission Manager")
     @app_commands.default_permissions(administrator=True)
     async def channel_manager(self, interaction: discord.Interaction):
-        # 1. Anti-Timeout lock
-        await interaction.response.defer(ephemeral=True)
-        
-        # 2. Prevent DM Crash
+        # Prevent DM usage
         if not interaction.guild:
-            await interaction.followup.send("❌ This command must be used inside a server.")
+            await interaction.response.send_message("❌ This command must be used inside a server.", ephemeral=True)
             return
 
-        # 3. Super Admin Check
+        # Super Admin Check
         if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
-            await interaction.followup.send("❌ Only the Server Owner or Bot Developer can use the Channel Manager!")
+            await interaction.response.send_message("❌ Only the Server Owner or Bot Developer can use the Channel Manager!", ephemeral=True)
             return
             
-        # 4. Safely deploy dashboard
-        await interaction.followup.send(embed=get_manager_embed(), view=ChannelManagerView(interaction.guild))
+        await interaction.response.send_message(embed=get_manager_embed(), view=ChannelManagerView(interaction.guild), ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(ChannelManagerCog(bot))
-    
+        
