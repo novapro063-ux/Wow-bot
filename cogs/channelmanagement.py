@@ -8,7 +8,7 @@ from discord import app_commands
 MY_USER_ID = 1313370345851457569
 
 # ---------------------------------------------------------
-# ALL 35 PERMISSIONS SPLIT INTO TWO MENUS (Max 25 per menu)
+# ALL 35 PERMISSIONS SPLIT INTO TWO MENUS
 # ---------------------------------------------------------
 TEXT_GENERAL_PERMS = [
     discord.SelectOption(label="View Channel", value="view_channel", emoji="👁️"),
@@ -58,7 +58,7 @@ def get_manager_embed(channel: discord.abc.GuildChannel = None, role: discord.Ro
     embed = discord.Embed(title="🎛️ Ultimate Channel Permission Manager", color=discord.Color.from_str("#2b2d31"))
     
     if not channel or not role:
-        embed.description = "👇 **Please select a Channel and a Role from the dropdowns below to view and edit all 35 permissions.**"
+        embed.description = "👇 **Please select a Channel and a Role from the dropdowns below to view and edit permissions.**\n*(Tip: Use the 🌍 button for `@everyone` role)*"
         return embed
 
     embed.description = f"**Target Channel:** {channel.mention}\n**Target Role:** {role.mention}"
@@ -118,12 +118,11 @@ class ChannelManagerView(discord.ui.View):
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="1️⃣ Select a Channel", row=0)
     async def channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
         self.target_channel = select.values[0]
-        # Rebuild view to reset dropdowns and enable next steps
         new_view = ChannelManagerView(self.guild, self.target_channel, self.target_role)
         await interaction.response.edit_message(embed=get_manager_embed(self.target_channel, self.target_role), view=new_view)
 
     # ROW 1: Role Selection
-    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="2️⃣ Select a Role", row=1)
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="2️⃣ Select a Specific Role (Skip if targeting @everyone)", row=1)
     async def role_select(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
         self.target_role = select.values[0]
         new_view = ChannelManagerView(self.guild, self.target_channel, self.target_role)
@@ -143,21 +142,31 @@ class ChannelManagerView(discord.ui.View):
         self.update_action_buttons()
         await interaction.response.edit_message(view=self)
 
-    # ROW 4: Action Buttons
+    # ROW 4: Action Buttons including @everyone
+    @discord.ui.button(label="@everyone", style=discord.ButtonStyle.primary, emoji="🌍", row=4)
+    async def btn_everyone(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.target_channel:
+            await interaction.response.send_message("❌ Please select a Channel first from the top dropdown!", ephemeral=True)
+            return
+        
+        self.target_role = self.guild.default_role # This targets the @everyone role
+        new_view = ChannelManagerView(self.guild, self.target_channel, self.target_role)
+        await interaction.response.edit_message(embed=get_manager_embed(self.target_channel, self.target_role), view=new_view)
+
     async def apply_permissions(self, interaction: discord.Interaction, perm_value: bool | None, action_name: str):
         all_selected_perms = self.selected_text_perms + self.selected_voice_perms
         if not self.target_channel or not self.target_role or not all_selected_perms:
             return
             
         try:
-            # Fetch current overwrites
+            # Fetch current overwrites (This automatically "adds" the role if it doesn't exist)
             overwrite = self.target_channel.overwrites_for(self.target_role)
             
             # Apply changes
             kwargs = {perm: perm_value for perm in all_selected_perms}
             overwrite.update(**kwargs)
             
-            # Save to Discord
+            # Save to Discord API
             await self.target_channel.set_permissions(self.target_role, overwrite=overwrite, reason=f"Advanced Manager by {interaction.user}")
             
             # Refresh View cleanly
@@ -202,4 +211,4 @@ class ChannelManagerCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(ChannelManagerCog(bot))
-      
+    
