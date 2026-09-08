@@ -38,56 +38,60 @@ def save_feedback_config(guild_id: int, config: dict):
 
 
 # ---------------------------------------------------------
-# 3. FEEDBACK MODAL (Form for Users)
+# 3. FEEDBACK MODAL (Form for Description)
 # ---------------------------------------------------------
-class FeedbackModal(discord.ui.Modal, title="📝 Submit Your Feedback"):
-    rating = discord.ui.TextInput(
-        label="Rating (1 to 5 Stars)", 
-        style=discord.TextStyle.short, 
-        placeholder="Enter a number between 1 and 5...", 
-        max_length=1, 
-        required=True
-    )
-    description = discord.ui.TextInput(
-        label="Feedback Description", 
-        style=discord.TextStyle.paragraph, 
-        placeholder="Write your feedback or suggestions here...", 
-        required=True
-    )
+class FeedbackModal(discord.ui.Modal):
+    def __init__(self, stars: int):
+        # ડায়নামিক টাইটেল (যাতে ইউজার দেখতে পারে সে কত স্টার সিলেক্ট করেছে)
+        super().__init__(title=f"📝 Submit {stars}-Star Feedback")
+        self.stars = stars
+        
+        self.description = discord.ui.TextInput(
+            label="Feedback Description",
+            style=discord.TextStyle.paragraph,
+            placeholder="Write your feedback, suggestions, or issues here...",
+            required=True,
+            max_length=2000
+        )
+        self.add_item(self.description)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         config = get_feedback_config(guild.id)
         
-        # 1. Rating Check
-        try:
-            star_count = int(self.rating.value.strip())
-            star_count = max(1, min(star_count, 5)) 
-        except:
-            star_count = 5 
-            
-        stars_str = "⭐" * star_count + "☆" * (5 - star_count)
+        stars_str = "⭐" * self.stars + "☆" * (5 - self.stars)
+        
+        # ডায়নামিক কালার (রেটিং অনুযায়ী কালার চেঞ্জ হবে)
+        colors = {
+            5: discord.Color.gold(),
+            4: discord.Color.green(),
+            3: discord.Color.from_str("#FEE75C"), # Yellow
+            2: discord.Color.orange(),
+            1: discord.Color.red()
+        }
+        embed_color = colors.get(self.stars, discord.Color.blurple())
 
-        # 2. Send Log to Admin Channel
+        # 1. Send Premium Log to Admin Channel
         log_channel_id = config.get("log_channel_id")
         if log_channel_id:
             try:
                 log_channel = guild.get_channel(int(log_channel_id))
                 if log_channel:
                     embed = discord.Embed(
-                        title="🌟 New Server Feedback",
-                        color=discord.Color.gold(),
+                        title="🌟 New Server Feedback Received!",
+                        description=f"**Feedback:**\n```\n{self.description.value}\n```",
+                        color=embed_color,
                         timestamp=datetime.datetime.now()
                     )
-                    embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-                    embed.add_field(name="Rating", value=stars_str, inline=False)
-                    embed.add_field(name="Feedback", value=self.description.value, inline=False)
+                    embed.set_author(name=f"{interaction.user.display_name} ({interaction.user.name})", icon_url=interaction.user.display_avatar.url)
+                    embed.add_field(name="Given Rating", value=f"**{self.stars}/5** {stars_str}", inline=False)
+                    embed.set_thumbnail(url=interaction.user.display_avatar.url)
                     embed.set_footer(text=f"User ID: {interaction.user.id}")
                     await log_channel.send(embed=embed)
             except Exception as e:
                 print(f"Feedback Log Error: {e}")
 
-        # 3. Give Reward Role
+        # 2. Give Reward Role
         role_id = config.get("reward_role_id")
         role_given = False
         if role_id:
@@ -99,8 +103,8 @@ class FeedbackModal(discord.ui.Modal, title="📝 Submit Your Feedback"):
             except:
                 pass
 
-        # 4. Reply to User
-        msg = f"✅ Thank you for your feedback! You gave us **{star_count} Stars**."
+        # 3. Reply to User
+        msg = f"✅ Thank you for your valuable feedback! You rated us **{self.stars} Stars**."
         if role_given:
             msg += f"\n🎉 As a reward, you have received the <@&{role_id}> role!"
             
@@ -108,16 +112,27 @@ class FeedbackModal(discord.ui.Modal, title="📝 Submit Your Feedback"):
 
 
 # ---------------------------------------------------------
-# 2. USER PANEL VIEW (Persistent Button)
+# 2. USER PANEL VIEW (Selection Menu for Stars)
 # ---------------------------------------------------------
 class FeedbackPanelView(discord.ui.View):
     def __init__(self):
-        # timeout=None keeps the button working even after bot restarts
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="📝 Give Feedback", style=discord.ButtonStyle.success, custom_id="btn_give_feedback")
-    async def btn_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(FeedbackModal())
+    @discord.ui.select(
+        custom_id="persistent_feedback_star_select",
+        placeholder="⭐ Select your rating to start...",
+        options=[
+            discord.SelectOption(label="5 Stars - Excellent!", value="5", emoji="🌟"),
+            discord.SelectOption(label="4 Stars - Very Good", value="4", emoji="⭐"),
+            discord.SelectOption(label="3 Stars - Good", value="3", emoji="👍"),
+            discord.SelectOption(label="2 Stars - Fair", value="2", emoji="😕"),
+            discord.SelectOption(label="1 Star - Poor", value="1", emoji="😞"),
+        ]
+    )
+    async def select_rating(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Selection মেনু থেকে কত স্টার সিলেক্ট করেছে সেটা নিয়ে Modal ওপেন হবে
+        stars = int(select.values[0])
+        await interaction.response.send_modal(FeedbackModal(stars=stars))
 
 
 # ---------------------------------------------------------
@@ -179,7 +194,7 @@ class FeedbackCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        # Register the persistent view so the "Give Feedback" button works after restarts
+        # রিস্টার্টের পরেও যাতে Selection Menu কাজ করে তার জন্য
         self.bot.add_view(FeedbackPanelView())
 
     @app_commands.command(name="feedback_setup", description="⚙️ Open the Feedback System Dashboard")
@@ -199,7 +214,7 @@ class FeedbackCog(commands.Cog):
 
         panel_embed = discord.Embed(
             title="🌟 We Value Your Feedback!",
-            description="Help us improve the server by sharing your thoughts.\nClick the button below to submit your feedback and rating.",
+            description="Help us improve the server by sharing your thoughts.\n**Please select a rating below to submit your feedback.**",
             color=discord.Color.from_str("#2b2d31")
         )
         if config.get('reward_role_id'):
@@ -210,4 +225,3 @@ class FeedbackCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(FeedbackCog(bot))
-                           
