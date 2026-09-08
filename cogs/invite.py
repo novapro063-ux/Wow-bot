@@ -38,14 +38,17 @@ def save_guild_data(guild_id: int, guild_data: dict):
     data[str(guild_id)] = guild_data
     save_data(data)
 
-# ফিক্সড লজিক: এখন এটি এক্সিস্টিং ডাটাবেস থেকে কাজ করবে, দু'বার রিড করবে না।
 def ensure_user(g_data: dict, user_id: int):
     uid = str(user_id)
     if uid not in g_data["users"]:
         g_data["users"][uid] = {
-            "regular": 0, "fake": 0, "leave": 0, "bonus": 0, "bots": 0,
+            "regular": 0, "fake": 0, "leave": 0, "bonus": 0, "bots": 0, "rejoin": 0,
             "history": [], "invited_by": None, "join_date": None
         }
+    else:
+        # পুরানো ডাটাবেসে rejoin ফিল্ড না থাকলে এটি অ্যাড করে নেবে
+        if "rejoin" not in g_data["users"][uid]:
+            g_data["users"][uid]["rejoin"] = 0
     return uid
 
 
@@ -219,15 +222,19 @@ class InviteTracker(commands.Cog):
             inviter_id = ensure_user(g_data, inviter.id)
             joined_id = ensure_user(g_data, member.id)
 
+            is_rejoin = g_data["users"][joined_id].get("join_date") is not None
+
+            # ক্যাটাগরি নির্ধারণ
             inc_field = "regular"
             if member.bot: inc_field = "bots"
             elif (datetime.datetime.now(datetime.timezone.utc) - member.created_at).days < 1: inc_field = "fake"
+            elif is_rejoin: inc_field = "rejoin" # Rejoin ট্র্যাক করার লজিক
             
             entry_data = {
                 "name": member.name,
                 "id": str(member.id),
                 "date": datetime.datetime.now().strftime("%d-%b-%Y %I:%M %p"),
-                "status": "New Join"
+                "status": "Rejoined" if is_rejoin else "New Join"
             }
 
             g_data["users"][inviter_id][inc_field] += 1
@@ -237,13 +244,18 @@ class InviteTracker(commands.Cog):
             
             save_guild_data(guild.id, g_data)
 
+            # লগ মেসেজ
             if g_data["config"]["is_enabled"] and g_data["config"]["channel_id"]:
                 try:
                     ch = guild.get_channel(int(g_data["config"]["channel_id"]))
                     stats = g_data["users"][inviter_id]
-                    net = max(0, (stats["regular"] + stats["bonus"]) - (stats["fake"] + stats["leave"]))
+                    net = max(0, (stats.get("regular", 0) + stats.get("rejoin", 0) + stats.get("bonus", 0)) - (stats.get("fake", 0) + stats.get("leave", 0)))
                     
-                    embed = discord.Embed(description=f"📥 {member.mention} joined!", color=discord.Color.green())
+                    if is_rejoin:
+                        embed = discord.Embed(description=f"🔄 {member.mention} **rejoined** the server!", color=discord.Color.blue())
+                    else:
+                        embed = discord.Embed(description=f"📥 {member.mention} joined!", color=discord.Color.green())
+                        
                     embed.add_field(name="Invited By", value=f"{inviter.mention} (`{net}` invites)", inline=True)
                     if used_invite: embed.add_field(name="Code", value=f"`{used_invite.code}`", inline=True)
                     if inc_field == "fake": embed.add_field(name="⚠️ Warning", value="Account is less than 1 day old (Fake).", inline=False)
@@ -271,7 +283,7 @@ class InviteTracker(commands.Cog):
                 try:
                     ch = member.guild.get_channel(int(g_data["config"]["channel_id"]))
                     stats = g_data["users"][inviter_id]
-                    net = max(0, (stats["regular"] + stats["bonus"]) - (stats["fake"] + stats["leave"]))
+                    net = max(0, (stats.get("regular", 0) + stats.get("rejoin", 0) + stats.get("bonus", 0)) - (stats.get("fake", 0) + stats.get("leave", 0)))
                     embed = discord.Embed(description=f"📤 {member.mention} left.", color=discord.Color.red())
                     embed.add_field(name="Invited By", value=f"<@{inviter_id}> (`{net}` invites left)", inline=False)
                     await ch.send(embed=embed)
@@ -289,7 +301,7 @@ class InviteTracker(commands.Cog):
         embed.add_field(name="Log Channel", value=f"<#{ch_id}>" if ch_id else "Not Set", inline=True)
         await interaction.response.send_message(embed=embed, view=TrackerDashboardView(interaction.guild.id), ephemeral=True)
 
-    @commands.hybrid_command(name="sync_invites", description="🔄 Sync your past 12+ invites from Discord to Database")
+    @commands.hybrid_command(name="sync_invites", description="🔄 Sync your past invites from Discord to Database")
     @commands.has_permissions(administrator=True)
     async def sync_invites(self, ctx):
         await ctx.defer()
@@ -322,8 +334,15 @@ class InviteTracker(commands.Cog):
         user_id = ensure_user(g_data, member.id)
         data = g_data["users"][user_id]
 
-        reg, fake, leave, bonus, bots = data["regular"], data["fake"], data["leave"], data["bonus"], data["bots"]
-        total = max(0, (reg + bonus) - (fake + leave))
+        reg = data.get("regular", 0)
+        rejoin = data.get("rejoin", 0)
+        fake = data.get("fake", 0)
+        leave = data.get("leave", 0)
+        bonus = data.get("bonus", 0)
+        bots = data.get("bots", 0)
+
+        # Rejoin-ও টোটালের সাথে যোগ হবে
+        total = max(0, (reg + rejoin + bonus) - (fake + leave))
 
         embed = discord.Embed(color=discord.Color.from_str("#2b2d31"))
         embed.set_author(name=f"{member.name}", icon_url=member.display_avatar.url)
@@ -333,6 +352,7 @@ class InviteTracker(commands.Cog):
             f"<:Star:1472268505238863945> **Total Invites:** `{total}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"<:dot:1472268394391670855> **Join:** `{reg}`\n"
+            f"<:dot:1472268394391670855> **Rejoin:** `{rejoin}`\n"
             f"<:dot:1472268394391670855> **Leave:** `{leave}`\n"
             f"<:dot:1472268394391670855> **Fake:** `{fake}`\n"
             f"<:dot:1472268394391670855> **Bonus:** `{bonus}`\n"
@@ -417,4 +437,3 @@ class InviteTracker(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(InviteTracker(bot))
-        
