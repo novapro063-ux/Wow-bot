@@ -29,7 +29,6 @@ def get_guild_data(guild_id: int):
         data[g_id] = {
             "config": {"channel_id": None, "is_enabled": False},
             "users": {} 
-            # user_id: { regular: 0, fake: 0, leave: 0, bonus: 0, bots: 0, history: [], invited_by: None, join_date: None }
         }
         save_data(data)
     return data[g_id]
@@ -49,8 +48,62 @@ def get_user_data(guild_id: int, user_id: int):
         }
     return g_data, u_id
 
+
 # ---------------------------------------------------------
-# BUTTON CLASS (Pagination View for /invited)
+# DASHBOARD UI CLASSES (For /invite_setup)
+# ---------------------------------------------------------
+class TrackerChannelSelect(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="Select a channel for Invite Logs", row=0)
+    async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        g_data = get_guild_data(self.guild_id)
+        g_data["config"]["channel_id"] = str(select.values[0].id)
+        g_data["config"]["is_enabled"] = True
+        save_guild_data(self.guild_id, g_data)
+        
+        embed = discord.Embed(title="🔗 Invite Tracker Settings", color=discord.Color.from_str("#2b2d31"))
+        embed.add_field(name="Status", value="✅ Enabled", inline=True)
+        embed.add_field(name="Log Channel", value=f"<#{select.values[0].id}>", inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=TrackerDashboardView(self.guild_id))
+        await interaction.followup.send(f"✅ Invite Log Channel set to <#{select.values[0].id}>!", ephemeral=True)
+
+class TrackerDashboardView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        g_data = get_guild_data(guild_id)
+        
+        if g_data["config"]["is_enabled"]:
+            self.btn_toggle.label = "❌ Disable Logs"
+            self.btn_toggle.style = discord.ButtonStyle.danger
+        else:
+            self.btn_toggle.label = "✅ Enable Logs"
+            self.btn_toggle.style = discord.ButtonStyle.success
+
+    @discord.ui.button(label="📢 Set Log Channel", style=discord.ButtonStyle.primary, row=0)
+    async def btn_set_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=TrackerChannelSelect(self.guild_id))
+
+    @discord.ui.button(label="Toggle", custom_id="btn_toggle", row=0)
+    async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g_data = get_guild_data(self.guild_id)
+        g_data["config"]["is_enabled"] = not g_data["config"]["is_enabled"]
+        save_guild_data(self.guild_id, g_data)
+        
+        embed = discord.Embed(title="🔗 Invite Tracker Settings", color=discord.Color.from_str("#2b2d31"))
+        embed.add_field(name="Status", value="✅ Enabled" if g_data["config"]["is_enabled"] else "❌ Disabled", inline=True)
+        ch_id = g_data["config"]["channel_id"]
+        embed.add_field(name="Log Channel", value=f"<#{ch_id}>" if ch_id else "Not Set", inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=TrackerDashboardView(self.guild_id))
+
+
+# ---------------------------------------------------------
+# PAGINATION CLASS (For /invited list)
 # ---------------------------------------------------------
 class InvitePaginationView(discord.ui.View):
     def __init__(self, data, title, author, member_checked):
@@ -61,7 +114,7 @@ class InvitePaginationView(discord.ui.View):
         self.member_checked = member_checked
         self.current_page = 1
         self.items_per_page = 10
-        self.total_pages = math.ceil(len(data) / self.items_per_page)
+        self.total_pages = max(1, math.ceil(len(data) / self.items_per_page))
         self.update_buttons()
 
     def create_embed(self):
@@ -120,7 +173,6 @@ class InviteTracker(commands.Cog):
         self.invites_cache = {}
 
     async def cog_load(self):
-        """বট চালু হলে সমস্ত সার্ভারের ইনভাইট ক্যাশ করবে (100% Accuracy)"""
         for guild in self.bot.guilds:
             try: self.invites_cache[guild.id] = await guild.invites()
             except: pass
@@ -135,14 +187,12 @@ class InviteTracker(commands.Cog):
         try: self.invites_cache[invite.guild.id] = await invite.guild.invites()
         except: pass
 
-    # ================= 📥 JOIN TRACKING =================
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
         inviter = None
         used_invite = None
 
-        # ১. ইনভাইটার খোঁজা (Bot & Human)
         if member.bot:
             try:
                 await asyncio.sleep(0.5)
@@ -164,12 +214,10 @@ class InviteTracker(commands.Cog):
                             break
             except: pass
         
-        # ২. ডাটাবেসে সেভ করা
         if inviter:
             g_data, inviter_id = get_user_data(guild.id, inviter.id)
             _, joined_id = get_user_data(guild.id, member.id)
 
-            # টাইপ নির্ধারণ (Regular, Fake, Bot)
             inc_field = "regular"
             if member.bot: inc_field = "bots"
             elif (datetime.datetime.now(datetime.timezone.utc) - member.created_at).days < 1: inc_field = "fake"
@@ -181,17 +229,13 @@ class InviteTracker(commands.Cog):
                 "status": "New Join"
             }
 
-            # আপডেট Inviter
             g_data["users"][inviter_id][inc_field] += 1
             g_data["users"][inviter_id]["history"].insert(0, entry_data)
-
-            # আপডেট Joined Member
             g_data["users"][joined_id]["invited_by"] = inviter_id
             g_data["users"][joined_id]["join_date"] = entry_data["date"]
             
             save_guild_data(guild.id, g_data)
 
-            # Dashboard Log
             if g_data["config"]["is_enabled"] and g_data["config"]["channel_id"]:
                 try:
                     ch = guild.get_channel(int(g_data["config"]["channel_id"]))
@@ -205,25 +249,19 @@ class InviteTracker(commands.Cog):
                     await ch.send(embed=embed)
                 except: pass
 
-    # ================= 📤 LEAVE TRACKING (100% Accurate) =================
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         g_data, member_id = get_user_data(member.guild.id, member.id)
         
         inviter_id = g_data["users"][member_id].get("invited_by")
         if inviter_id and inviter_id in g_data["users"]:
-            # লিভ কাউন্ট প্লাস করা
             g_data["users"][inviter_id]["leave"] += 1
-            
-            # হিস্ট্রিতে স্ট্যাটাস 'Left' করে দেওয়া
             for history_entry in g_data["users"][inviter_id]["history"]:
                 if history_entry["id"] == str(member.id):
                     history_entry["status"] = "Left"
                     break
-            
             save_guild_data(member.guild.id, g_data)
 
-            # Dashboard Log
             if g_data["config"]["is_enabled"] and g_data["config"]["channel_id"]:
                 try:
                     ch = member.guild.get_channel(int(g_data["config"]["channel_id"]))
@@ -234,7 +272,44 @@ class InviteTracker(commands.Cog):
                     await ch.send(embed=embed)
                 except: pass
 
-    # ================= 📊 1. INVITE STATS =================
+    # ================= 🛠️ COMMANDS =================
+
+    @app_commands.command(name="invite_setup", description="⚙️ Configure the invite tracker dashboard")
+    @app_commands.default_permissions(administrator=True)
+    async def invite_setup(self, interaction: discord.Interaction):
+        g_data = get_guild_data(interaction.guild.id)
+        embed = discord.Embed(title="🔗 Invite Tracker Settings", description="Set up a channel to log who invited who.", color=discord.Color.from_str("#2b2d31"))
+        embed.add_field(name="Status", value="✅ Enabled" if g_data["config"]["is_enabled"] else "❌ Disabled", inline=True)
+        ch_id = g_data["config"]["channel_id"]
+        embed.add_field(name="Log Channel", value=f"<#{ch_id}>" if ch_id else "Not Set", inline=True)
+        await interaction.response.send_message(embed=embed, view=TrackerDashboardView(interaction.guild.id), ephemeral=True)
+
+    @commands.hybrid_command(name="sync_invites", description="🔄 Sync your past 12+ invites from Discord to Database")
+    @commands.has_permissions(administrator=True)
+    async def sync_invites(self, ctx):
+        await ctx.defer()
+        g_data = get_guild_data(ctx.guild.id)
+        try:
+            invites = await ctx.guild.invites()
+            total_synced = 0
+            
+            user_uses = {}
+            for inv in invites:
+                if inv.inviter and inv.uses > 0:
+                    uid = str(inv.inviter.id)
+                    user_uses[uid] = user_uses.get(uid, 0) + inv.uses
+                    
+            for uid, uses in user_uses.items():
+                if uid not in g_data["users"]:
+                    g_data["users"][uid] = {"regular": 0, "fake": 0, "leave": 0, "bonus": 0, "bots": 0, "history": [], "invited_by": None, "join_date": None}
+                g_data["users"][uid]["regular"] = uses
+                total_synced += uses
+                
+            save_guild_data(ctx.guild.id, g_data)
+            await ctx.send(embed=discord.Embed(description=f"✅ Successfully synced **{total_synced}** past invites from Discord links!", color=discord.Color.green()))
+        except Exception as e:
+            await ctx.send(f"❌ Failed to sync: {e}")
+
     @commands.hybrid_command(name="invite", aliases=["i"], description="📊 View invite stats")
     @app_commands.describe(member="User to check")
     async def invite(self, ctx, member: discord.Member = None):
@@ -258,10 +333,8 @@ class InviteTracker(commands.Cog):
             f"<:dot:1472268394391670855> **Bonus:** `{bonus}`\n"
             f"<:dot:1472268394391670855> **Bots:** `{bots}`"
         )
-        embed.set_footer(text="Funny Bot Security", icon_url=self.bot.user.display_avatar.url if self.bot.user else None)
         await ctx.send(embed=embed)
 
-    # ================= 📜 2. INVITED LIST =================
     @commands.hybrid_command(name="invited", aliases=["invites", "list", "il"], description="📜 See invited list")
     @app_commands.describe(member="User to check")
     async def invited(self, ctx, member: discord.Member = None):
@@ -276,7 +349,6 @@ class InviteTracker(commands.Cog):
         view = InvitePaginationView(data=history, title=f"📜 Invited by: {target.name}", author=ctx.author, member_checked=target)
         await ctx.send(embed=view.create_embed(), view=view)
 
-    # ================= 🕵️ 3. INVITER (CHECK SOURCE) =================
     @commands.hybrid_command(name="inviter", aliases=["who", "check"], description="🕵️ Check inviter")
     @app_commands.describe(member="User to check")
     async def inviter(self, ctx, member: discord.Member = None):
@@ -291,12 +363,9 @@ class InviteTracker(commands.Cog):
             date = g_data["users"][user_id].get("join_date", "Unknown")
             embed.description = f"👤 **Member:** {target.mention}\n📨 **Invited By:** <@{inviter_id}> (`{inviter_id}`)\n📅 **Date:** `{date}`"
         else:
-            embed.description = f"👤 **Member:** {target.mention}\n❓ **Invited By:** Unknown\n⚠️ *Tracking started recently or Vanity URL used.*"
-
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
+            embed.description = f"👤 **Member:** {target.mention}\n❓ **Invited By:** Unknown\n⚠️ *Joined via Vanity URL or before tracking started.*"
         await ctx.send(embed=embed)
 
-    # ================= 🎁 4. ADD INVITE =================
     @commands.hybrid_command(name="addinvite", description="🎁 Add bonus invites")
     @commands.has_permissions(administrator=True)
     async def addinvite(self, ctx, member: discord.Member, amount: int):
@@ -305,10 +374,8 @@ class InviteTracker(commands.Cog):
         save_guild_data(ctx.guild.id, g_data)
         
         embed = discord.Embed(description=f"<:Star:1472268505238863945> Added **{amount}** bonus invites to {member.mention}", color=discord.Color.green())
-        embed.set_author(name=f"Action by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
         await ctx.send(embed=embed)
 
-    # ================= 🗑️ 5. REMOVE INVITE =================
     @commands.hybrid_command(name="removeinvite", description="🗑️ Remove bonus invites")
     @commands.has_permissions(administrator=True)
     async def removeinvite(self, ctx, member: discord.Member, amount: int):
@@ -317,37 +384,28 @@ class InviteTracker(commands.Cog):
         save_guild_data(ctx.guild.id, g_data)
         
         embed = discord.Embed(description=f"<:dot:1472268394391670855> Removed **{amount}** bonus invites from {member.mention}", color=discord.Color.orange())
-        embed.set_author(name=f"Action by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
         await ctx.send(embed=embed)
 
-    # ================= 🧹 6. CLEAR INVITE =================
-    @commands.hybrid_command(name="clearinvite", aliases=["ci"], description="⚠️ Clear ALL invite data for a user")
+    @commands.hybrid_command(name="clearinvite", description="⚠️ Clear ALL invite data for a user")
     @commands.has_permissions(administrator=True)
     async def clearinvite(self, ctx, member: discord.Member):
         g_data = get_guild_data(ctx.guild.id)
         user_id = str(member.id)
-        
         if user_id in g_data["users"]:
             del g_data["users"][user_id]
             save_guild_data(ctx.guild.id, g_data)
-            embed = discord.Embed(description=f"<:dot:1472268394391670855> **Success:** All invite data for {member.mention} has been wiped!", color=discord.Color.red())
+            await ctx.send(embed=discord.Embed(description=f"<:dot:1472268394391670855> **Success:** All invite data for {member.mention} has been wiped!", color=discord.Color.red()))
         else:
-            embed = discord.Embed(description="❌ This user already has 0 invites.", color=discord.Color.red())
-            
-        embed.set_author(name=f"Action by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
+            await ctx.send(embed=discord.Embed(description="❌ This user already has 0 invites.", color=discord.Color.red()))
 
-    # ================= ⚠️ 7. RESET ALL =================
     @commands.hybrid_command(name="resetallinvite", description="⚠️ Wipe all invite data for the entire server")
     @commands.has_permissions(administrator=True)
     async def resetallinvite(self, ctx):
         g_data = get_guild_data(ctx.guild.id)
         g_data["users"] = {}
         save_guild_data(ctx.guild.id, g_data)
-        
-        embed = discord.Embed(description="<:dot:1472268394391670855> All invite counts and history for this server have been reset!", color=discord.Color.red())
-        embed.set_author(name=f"Action by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
+        await ctx.send(embed=discord.Embed(description="<:dot:1472268394391670855> All invite counts and history for this server have been reset!", color=discord.Color.red()))
 
 async def setup(bot):
     await bot.add_cog(InviteTracker(bot))
+    
