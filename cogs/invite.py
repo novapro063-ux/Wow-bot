@@ -38,15 +38,15 @@ def save_guild_data(guild_id: int, guild_data: dict):
     data[str(guild_id)] = guild_data
     save_data(data)
 
-def get_user_data(guild_id: int, user_id: int):
-    g_data = get_guild_data(guild_id)
-    u_id = str(user_id)
-    if u_id not in g_data["users"]:
-        g_data["users"][u_id] = {
+# ফিক্সড লজিক: এখন এটি এক্সিস্টিং ডাটাবেস থেকে কাজ করবে, দু'বার রিড করবে না।
+def ensure_user(g_data: dict, user_id: int):
+    uid = str(user_id)
+    if uid not in g_data["users"]:
+        g_data["users"][uid] = {
             "regular": 0, "fake": 0, "leave": 0, "bonus": 0, "bots": 0,
             "history": [], "invited_by": None, "join_date": None
         }
-    return g_data, u_id
+    return uid
 
 
 # ---------------------------------------------------------
@@ -215,8 +215,9 @@ class InviteTracker(commands.Cog):
             except: pass
         
         if inviter:
-            g_data, inviter_id = get_user_data(guild.id, inviter.id)
-            _, joined_id = get_user_data(guild.id, member.id)
+            g_data = get_guild_data(guild.id)
+            inviter_id = ensure_user(g_data, inviter.id)
+            joined_id = ensure_user(g_data, member.id)
 
             inc_field = "regular"
             if member.bot: inc_field = "bots"
@@ -251,8 +252,12 @@ class InviteTracker(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        g_data, member_id = get_user_data(member.guild.id, member.id)
+        g_data = get_guild_data(member.guild.id)
+        member_id = str(member.id)
         
+        if member_id not in g_data["users"]:
+            return
+
         inviter_id = g_data["users"][member_id].get("invited_by")
         if inviter_id and inviter_id in g_data["users"]:
             g_data["users"][inviter_id]["leave"] += 1
@@ -300,8 +305,7 @@ class InviteTracker(commands.Cog):
                     user_uses[uid] = user_uses.get(uid, 0) + inv.uses
                     
             for uid, uses in user_uses.items():
-                if uid not in g_data["users"]:
-                    g_data["users"][uid] = {"regular": 0, "fake": 0, "leave": 0, "bonus": 0, "bots": 0, "history": [], "invited_by": None, "join_date": None}
+                ensure_user(g_data, uid)
                 g_data["users"][uid]["regular"] = uses
                 total_synced += uses
                 
@@ -314,7 +318,8 @@ class InviteTracker(commands.Cog):
     @app_commands.describe(member="User to check")
     async def invite(self, ctx, member: discord.Member = None):
         member = member or ctx.author
-        g_data, user_id = get_user_data(ctx.guild.id, member.id)
+        g_data = get_guild_data(ctx.guild.id)
+        user_id = ensure_user(g_data, member.id)
         data = g_data["users"][user_id]
 
         reg, fake, leave, bonus, bots = data["regular"], data["fake"], data["leave"], data["bonus"], data["bots"]
@@ -339,7 +344,8 @@ class InviteTracker(commands.Cog):
     @app_commands.describe(member="User to check")
     async def invited(self, ctx, member: discord.Member = None):
         target = member or ctx.author
-        g_data, user_id = get_user_data(ctx.guild.id, target.id)
+        g_data = get_guild_data(ctx.guild.id)
+        user_id = ensure_user(g_data, target.id)
         history = g_data["users"][user_id].get("history", [])
 
         if not history:
@@ -353,7 +359,8 @@ class InviteTracker(commands.Cog):
     @app_commands.describe(member="User to check")
     async def inviter(self, ctx, member: discord.Member = None):
         target = member or ctx.author
-        g_data, user_id = get_user_data(ctx.guild.id, target.id)
+        g_data = get_guild_data(ctx.guild.id)
+        user_id = ensure_user(g_data, target.id)
         
         embed = discord.Embed(title="Invite Source", color=discord.Color.from_str("#2b2d31"))
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -369,7 +376,8 @@ class InviteTracker(commands.Cog):
     @commands.hybrid_command(name="addinvite", description="🎁 Add bonus invites")
     @commands.has_permissions(administrator=True)
     async def addinvite(self, ctx, member: discord.Member, amount: int):
-        g_data, user_id = get_user_data(ctx.guild.id, member.id)
+        g_data = get_guild_data(ctx.guild.id)
+        user_id = ensure_user(g_data, member.id)
         g_data["users"][user_id]["bonus"] += amount
         save_guild_data(ctx.guild.id, g_data)
         
@@ -379,7 +387,8 @@ class InviteTracker(commands.Cog):
     @commands.hybrid_command(name="removeinvite", description="🗑️ Remove bonus invites")
     @commands.has_permissions(administrator=True)
     async def removeinvite(self, ctx, member: discord.Member, amount: int):
-        g_data, user_id = get_user_data(ctx.guild.id, member.id)
+        g_data = get_guild_data(ctx.guild.id)
+        user_id = ensure_user(g_data, member.id)
         g_data["users"][user_id]["bonus"] -= amount
         save_guild_data(ctx.guild.id, g_data)
         
@@ -408,4 +417,4 @@ class InviteTracker(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(InviteTracker(bot))
-    
+        
