@@ -130,7 +130,7 @@ class AutoReplyCog(commands.Cog):
         await ctx.send(embed=embed, view=DashboardView(self.bot))
 
     # 2. Help Command
-    @commands.command(name="help", help="List all available auto-reply commands")
+    @commands.command(name="ahelp", help="List all available auto-reply commands")
     async def help_command(self, ctx: commands.Context):
         data = load_data()
         
