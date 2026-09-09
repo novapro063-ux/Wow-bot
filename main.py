@@ -29,7 +29,7 @@ def run_server():
 class UltimateBot(commands.Bot):
     def __init__(self):
         # Enabling all intents (Important for Member Join event)
-        super().__init__(command_prefix="!", intents=discord.Intents.all())
+        super().__init__(command_prefix="-", intents=discord.Intents.all())
 
     async def setup_hook(self):
         # Automatically load all files inside the 'cogs' folder
