@@ -14,9 +14,6 @@ import asyncio
 MY_USER_ID = 1313370345851457569
 DATA_FILE = "ticket_configs.json"
 
-# ---------------------------------------------------------
-# JSON DATABASE (Config Functions)
-# ---------------------------------------------------------
 def load_config():
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w") as f:
@@ -45,6 +42,7 @@ def ensure_guild_data(guild_id: str):
         config[guild_id]["select_panel"] = {
             "title": "🎫 Support Panel (Select Menu)",
             "description": "Please select a category below.",
+            "image": "",
             "categories": [],
             "staff_roles": [],
             "log_channel_id": None,
@@ -61,6 +59,7 @@ def ensure_guild_data(guild_id: str):
             config[guild_id]["button_panels"][str(i)] = {
                 "title": f"🔘 Support Panel (Buttons) - {i}",
                 "description": "Click a button to open a ticket.",
+                "image": "",
                 "buttons": [],
                 "staff_roles": [],
                 "log_channel_id": None,
@@ -107,7 +106,6 @@ async def create_ticket_channel(interaction: discord.Interaction, label: str, em
 
     try:
         channel = await interaction.guild.create_text_channel(name=ch_name, overwrites=overwrites, category=target_discord_category)
-        
         embed = discord.Embed(
             title=f"{emoji} {label} Ticket",
             description=f"Hello {interaction.user.mention}!\nWelcome to your ticket.\n\n**Staff:** {' '.join(staff_mentions)}",
@@ -122,7 +120,6 @@ async def create_ticket_channel(interaction: discord.Interaction, label: str, em
     except Exception as e:
         await interaction.followup.send("❌ Error: Missing permissions to create channels. Make sure I have 'Manage Channels' permission.", ephemeral=True)
 
-# --- REASON MODAL ---
 class ReasonModal(Modal):
     def __init__(self, label: str, emoji: str, target_cat_id: int, staff_roles: list):
         super().__init__(title=f"📝 Ticket Reason: {label}")
@@ -143,25 +140,20 @@ class ReasonModal(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await create_ticket_channel(interaction, self.label_str, self.emoji_str, self.target_cat_id, self.staff_roles, self.reason.value)
 
-# --- PANEL VIEWS (Sent to users) ---
 class TicketPanelView(View):
     def __init__(self, panel_type: str, panel_data: dict):
         super().__init__(timeout=None)
-        
         staff_roles = panel_data.get("staff_roles", [])
         
         if panel_type == "select":
             categories = panel_data.get("categories", [])
             if not categories: return
-            
             options = [discord.SelectOption(label=c["label"], emoji=c["emoji"], description=c["desc"], value=str(i)) for i, c in enumerate(categories)]
             select = Select(placeholder="👇 Select Support Category...", min_values=1, max_values=1, options=options, custom_id="main_ticket_select")
-            
             async def select_callback(interaction: discord.Interaction):
                 idx = int(select.values[0])
                 cat = categories[idx]
                 await interaction.response.send_modal(ReasonModal(cat["label"], cat["emoji"], cat["category_id"], staff_roles))
-                
             select.callback = select_callback
             self.add_item(select)
             
@@ -169,15 +161,12 @@ class TicketPanelView(View):
             buttons = panel_data.get("buttons", [])
             for i, btn_data in enumerate(buttons):
                 btn = Button(label=btn_data["label"], emoji=btn_data["emoji"], style=discord.ButtonStyle.primary, custom_id=f"btn_panel_{i}_{btn_data['label']}")
-                
                 async def btn_callback(interaction: discord.Interaction, bd=btn_data):
                     await interaction.response.send_modal(ReasonModal(bd["label"], bd["emoji"], bd.get("category_id"), staff_roles))
-                    
                 btn.callback = btn_callback
                 self.add_item(btn)
 
-
-# ================= 2. ACTIVE TICKET CONTROLS (Rename, Close, Claim) =================
+# ================= 2. ACTIVE TICKET CONTROLS =================
 class RenameTicketModal(Modal, title="✏️ Rename Ticket"):
     new_name = TextInput(label="New Channel Name", style=discord.TextStyle.short, required=True)
     async def on_submit(self, interaction: discord.Interaction):
@@ -241,9 +230,7 @@ class TicketActiveView(View):
     async def rename_btn(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(RenameTicketModal())
 
-
 # ================= 3. DASHBOARD CONFIGURATION LOGIC =================
-
 class SelectTargetCategoryView(View):
     def __init__(self, label_data: dict):
         super().__init__(timeout=120)
@@ -295,21 +282,29 @@ class SetupCategoryModal(Modal):
         else:
             await interaction.response.send_message("⚙️ **Step 2 (Optional):** Select a specific category, or skip to use default.", view=OptionalTargetCategoryView(self.panel_id, label_data), ephemeral=True)
 
-class ContentModal(Modal, title="📝 Edit Panel Text"):
-    title_input = TextInput(label="Title", required=True)
-    desc_input = TextInput(label="Description", style=discord.TextStyle.paragraph, required=True)
-    def __init__(self, panel_type: str, panel_id: str = None):
+class ContentModal(Modal, title="📝 Edit Panel Text & GIF"):
+    def __init__(self, panel_type: str, current_data: dict, panel_id: str = None):
         super().__init__()
         self.panel_type = panel_type
         self.panel_id = panel_id
+        self.title_input = TextInput(label="Title", default=current_data.get("title", ""), required=True)
+        self.desc_input = TextInput(label="Description", style=discord.TextStyle.paragraph, default=current_data.get("description", ""), required=True)
+        self.image_input = TextInput(label="GIF / Image URL (Optional)", default=current_data.get("image", ""), required=False)
+        
+        self.add_item(self.title_input)
+        self.add_item(self.desc_input)
+        self.add_item(self.image_input)
+
     async def on_submit(self, interaction: discord.Interaction):
         config = load_config()
         guild_id = str(interaction.guild.id)
         target = config[guild_id]["select_panel"] if self.panel_type == "select" else config[guild_id]["button_panels"][self.panel_id]
+        
         target["title"] = self.title_input.value
         target["description"] = self.desc_input.value
+        target["image"] = self.image_input.value.strip()
         save_config(config)
-        await interaction.response.send_message(f"✅ Text Updated!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Text & GIF Updated!", ephemeral=True)
 
 class PanelEditView(View):
     def __init__(self, panel_type: str, panel_id: str = None):
@@ -317,10 +312,12 @@ class PanelEditView(View):
         self.panel_type = panel_type
         self.panel_id = panel_id
 
-    # ----------------- ROW 0 -----------------
-    @discord.ui.button(label="📝 Edit Text", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="📝 Edit Text & GIF", style=discord.ButtonStyle.primary, row=0)
     async def edit_text(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(ContentModal(self.panel_type, self.panel_id))
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        current_data = config[guild_id]["select_panel"] if self.panel_type == "select" else config[guild_id]["button_panels"][self.panel_id]
+        await interaction.response.send_modal(ContentModal(self.panel_type, current_data, self.panel_id))
 
     @discord.ui.button(label="➕ Add Category/Button", style=discord.ButtonStyle.primary, row=0)
     async def add_item_btn(self, interaction: discord.Interaction, button: Button):
@@ -334,9 +331,7 @@ class PanelEditView(View):
         
         target_id = panel_data.get("target_channel_id")
         target_channel = interaction.guild.get_channel(target_id) if target_id else interaction.channel
-        
-        if not target_channel:
-            target_channel = interaction.channel
+        if not target_channel: target_channel = interaction.channel
             
         embed = discord.Embed(
             title=panel_data.get("title", "Ticket Support"),
@@ -344,15 +339,17 @@ class PanelEditView(View):
             color=discord.Color.blurple()
         )
         
+        image_url = panel_data.get("image", "")
+        if image_url and image_url.startswith("http"):
+            embed.set_image(url=image_url)
+            
         view = TicketPanelView(self.panel_type, panel_data)
-        
         try:
             await target_channel.send(embed=embed, view=view)
             await interaction.response.send_message(f"✅ Successfully sent the ticket panel to {target_channel.mention}!", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message(f"❌ Missing permissions to send messages in {target_channel.mention}.", ephemeral=True)
 
-    # ----------------- ROW 1 -----------------
     @discord.ui.select(cls=RoleSelect, placeholder="🛡️ Add Staff Role", max_values=1, row=1)
     async def select_role(self, interaction: discord.Interaction, select: RoleSelect):
         config = load_config()
@@ -362,8 +359,7 @@ class PanelEditView(View):
         save_config(config)
         await interaction.response.send_message(f"✅ Added Staff Role.", ephemeral=True)
 
-    # ----------------- ROW 2 -----------------
-    @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="📜 Set Log Channel", row=2)
+  @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="📜 Set Log Channel", row=2)
     async def select_log(self, interaction: discord.Interaction, select: ChannelSelect):
         config = load_config()
         guild_id = str(interaction.guild.id)
@@ -372,7 +368,6 @@ class PanelEditView(View):
         save_config(config)
         await interaction.response.send_message(f"✅ Log channel set.", ephemeral=True)
 
-    # ----------------- ROW 3 -----------------
     @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="📍 Set Target Channel (Optional)", row=3)
     async def select_target(self, interaction: discord.Interaction, select: ChannelSelect):
         config = load_config()
@@ -382,39 +377,20 @@ class PanelEditView(View):
         save_config(config)
         await interaction.response.send_message(f"✅ Target channel set to {select.values[0].mention}. Now click '🚀 Send Panel' to deploy.", ephemeral=True)
 
-    # ----------------- ROW 4 -----------------
     @discord.ui.button(label="🗑️ Reset This Panel", style=discord.ButtonStyle.danger, row=4)
     async def reset_panel_btn(self, interaction: discord.Interaction, button: Button):
         config = load_config()
         guild_id = str(interaction.guild.id)
-        
         if self.panel_type == "select":
-            config[guild_id]["select_panel"] = {
-                "title": "🎫 Support Panel (Select Menu)",
-                "description": "Please select a category below.",
-                "categories": [],
-                "staff_roles": [],
-                "log_channel_id": None,
-                "target_channel_id": None
-            }
+            config[guild_id]["select_panel"] = {"title": "🎫 Support Panel", "description": "Please select a category.", "image": "", "categories": [], "staff_roles": [], "log_channel_id": None, "target_channel_id": None}
         else:
-            config[guild_id]["button_panels"][self.panel_id] = {
-                "title": f"🔘 Support Panel (Buttons) - {self.panel_id}",
-                "description": "Click a button to open a ticket.",
-                "buttons": [],
-                "staff_roles": [],
-                "log_channel_id": None,
-                "target_channel_id": None
-            }
-            
+            config[guild_id]["button_panels"][self.panel_id] = {"title": f"🔘 Support Panel - {self.panel_id}", "description": "Click a button.", "image": "", "buttons": [], "staff_roles": [], "log_channel_id": None, "target_channel_id": None}
         save_config(config)
-        await interaction.response.send_message(f"✅ Panel has been completely reset to default!", ephemeral=True)
-
+        await interaction.response.send_message(f"✅ Panel has been reset to default!", ephemeral=True)
 
 class MasterDashboardView(View):
     def __init__(self):
         super().__init__(timeout=None)
-        
         btn = Button(label="⚙️ Configure MAIN Panel (Select Menu)", style=discord.ButtonStyle.primary, row=0)
         async def main_callback(interaction: discord.Interaction):
             ensure_guild_data(str(interaction.guild.id))
@@ -433,12 +409,10 @@ class MasterDashboardView(View):
         select.callback = btn_panel_callback
         self.add_item(select)
 
-
 # ================= 4. MAIN COG =================
 class TicketSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
     async def cog_load(self):
         self.bot.add_view(TicketActiveView())
         
@@ -447,9 +421,7 @@ class TicketSystem(commands.Cog):
     async def ticket_dashboard(self, interaction: discord.Interaction):
         if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
             return await interaction.response.send_message("❌ Access Denied.", ephemeral=True)
-            
         ensure_guild_data(str(interaction.guild.id))
-        
         embed = discord.Embed(
             title="🎛️ Ultimate Ticket Master Dashboard",
             description="Welcome to the Advanced Ticket System!\n\n**1. Main Panel (Select Menu):** Use the blue button to configure category-based tickets.\n**2. Button Panels (1-5):** Use the dropdown below to configure the 5 separate button-based panels.\n\n*(Note: You can set a target channel and use the **Send Panel** button to deploy it anywhere!)*",
