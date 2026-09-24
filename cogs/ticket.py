@@ -375,4 +375,59 @@ class PanelEditView(View):
         target = config[guild_id]["select_panel"] if self.panel_type == "select" else config[guild_id]["button_panels"][self.panel_id]
         target["target_channel_id"] = select.values[0].id
         save_config(config)
-        await interaction.response.send_message(f"✅ Target channel set to {select.values[0].mention}. Now click '🚀 Send Panel' to deploy."
+        await interaction.response.send_message(f"✅ Target channel set to {select.values[0].mention}. Now click '🚀 Send Panel' to deploy.", ephemeral=True)
+
+    @discord.ui.button(label="🗑️ Reset This Panel", style=discord.ButtonStyle.danger, row=4)
+    async def reset_panel_btn(self, interaction: discord.Interaction, button: Button):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        if self.panel_type == "select":
+            config[guild_id]["select_panel"] = {"title": "🎫 Support Panel", "description": "Please select a category.", "image": "", "categories": [], "staff_roles": [], "log_channel_id": None, "target_channel_id": None}
+        else:
+            config[guild_id]["button_panels"][self.panel_id] = {"title": f"🔘 Support Panel - {self.panel_id}", "description": "Click a button.", "image": "", "buttons": [], "staff_roles": [], "log_channel_id": None, "target_channel_id": None}
+        save_config(config)
+        await interaction.response.send_message(f"✅ Panel has been reset to default!", ephemeral=True)
+
+class MasterDashboardView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        btn = Button(label="⚙️ Configure MAIN Panel (Select Menu)", style=discord.ButtonStyle.primary, row=0)
+        async def main_callback(interaction: discord.Interaction):
+            ensure_guild_data(str(interaction.guild.id))
+            embed = discord.Embed(title="⚙️ Select Menu Ticket Panel", description="Configure the main dropdown ticket system. Discord category selection is mandatory here.\n\nUse the **🚀 Send Panel** button at the top to deploy it.", color=discord.Color.green())
+            await interaction.response.edit_message(embed=embed, view=PanelEditView("select"))
+        btn.callback = main_callback
+        self.add_item(btn)
+
+        options = [discord.SelectOption(label=f"Button Panel {i}", value=str(i), description=f"Configure separate button ticket panel {i}") for i in range(1, 6)]
+        select = Select(placeholder="🎛️ Configure BUTTON Panels (1 to 5)...", options=options, row=1)
+        async def btn_panel_callback(interaction: discord.Interaction):
+            panel_id = select.values[0]
+            ensure_guild_data(str(interaction.guild.id))
+            embed = discord.Embed(title=f"🔘 Button Ticket Panel {panel_id}", description="Configure a button-based ticket system. Discord category selection is optional.\n\nUse the **🚀 Send Panel** button at the top to deploy it.", color=discord.Color.blue())
+            await interaction.response.edit_message(embed=embed, view=PanelEditView("button", panel_id))
+        select.callback = btn_panel_callback
+        self.add_item(select)
+
+# ================= 4. MAIN COG =================
+class TicketSystem(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+    async def cog_load(self):
+        self.bot.add_view(TicketActiveView())
+        
+    @app_commands.command(name="ticket_dashboard", description="🛠️ Configure ALL Tickets (Select Menus & Buttons)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ticket_dashboard(self, interaction: discord.Interaction):
+        if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
+            return await interaction.response.send_message("❌ Access Denied.", ephemeral=True)
+        ensure_guild_data(str(interaction.guild.id))
+        embed = discord.Embed(
+            title="🎛️ Ultimate Ticket Master Dashboard",
+            description="Welcome to the Advanced Ticket System!\n\n**1. Main Panel (Select Menu):** Use the blue button to configure category-based tickets.\n**2. Button Panels (1-5):** Use the dropdown below to configure the 5 separate button-based panels.\n\n*(Note: You can set a target channel and use the **Send Panel** button to deploy it anywhere!)*",
+            color=discord.Color.gold()
+        )
+        await interaction.response.send_message(embed=embed, view=MasterDashboardView(), ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(TicketSystem(bot))
