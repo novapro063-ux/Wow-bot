@@ -28,34 +28,32 @@ def ensure_guild_data(guild_id: str):
     changed = False
     
     if guild_id not in data:
-        data[guild_id] = {}
-        changed = True
-
-    if "panel" not in data[guild_id]:
-        data[guild_id]["panel"] = {
-            "title": "📝 Server Request Panel",
-            "desc": "Click the button below to submit your request or suggestion.",
-            "image": "",
-            "btn_text": "Submit Request",
-            "btn_emoji": "📩"
-        }
+        data[guild_id] = {"panels": {}}
         changed = True
         
-    if "fields" not in data[guild_id]:
-        data[guild_id]["fields"] = [
-            {"label": "What is your request?", "placeholder": "Describe your request in detail...", "required": True},
-            {}, {}, {}, {} 
-        ]
+    if "panels" not in data[guild_id]:
+        data[guild_id]["panels"] = {}
         changed = True
 
-    if "log_channel_id" not in data[guild_id]:
-        data[guild_id]["log_channel_id"] = None
-        changed = True
-
-    if "target_channel_id" not in data[guild_id]:
-        data[guild_id]["target_channel_id"] = None
-        changed = True
-        
+    # ৫টি আলাদা প্যানেল জেনারেট করা হচ্ছে
+    for i in range(1, 6):
+        pid = str(i)
+        if pid not in data[guild_id]["panels"]:
+            data[guild_id]["panels"][pid] = {
+                "title": f"📝 Request Panel {pid}",
+                "desc": "Click the button below to submit your request.",
+                "image": "",
+                "btn_text": "Submit Request",
+                "btn_emoji": "📩",
+                "log_channel_id": None,
+                "target_channel_id": None,
+                "fields": [
+                    {"label": "What is your request?", "placeholder": "Describe your request in detail...", "required": True},
+                    {}, {}, {}, {} # Max 5 fields
+                ]
+            }
+            changed = True
+            
     if changed:
         save_data(data)
     return data
@@ -64,12 +62,13 @@ def ensure_guild_data(guild_id: str):
 # 1. USER FACING VIEWS (Panel & Modal)
 # ==========================================
 class DynamicRequestModal(Modal):
-    def __init__(self, guild_id: str):
-        data = load_data().get(guild_id, {})
-        panel_title = data.get("panel", {}).get("title", "Submit Request")[:45]
+    def __init__(self, guild_id: str, panel_id: str):
+        data = load_data().get(guild_id, {}).get("panels", {}).get(panel_id, {})
+        panel_title = data.get("title", "Submit Request")[:45]
         super().__init__(title=panel_title)
         
         self.guild_id = guild_id
+        self.panel_id = panel_id
         self.fields_data = data.get("fields", [])
         self.inputs = []
         
@@ -91,18 +90,18 @@ class DynamicRequestModal(Modal):
                 self.inputs.append(ti)
 
     async def on_submit(self, interaction: discord.Interaction):
-        data = load_data().get(self.guild_id, {})
+        data = load_data().get(self.guild_id, {}).get("panels", {}).get(self.panel_id, {})
         log_channel_id = data.get("log_channel_id")
         
         if not log_channel_id:
-            return await interaction.response.send_message("❌ The admins haven't set a log channel for requests yet!", ephemeral=True)
+            return await interaction.response.send_message("❌ The admins haven't set a log channel for this panel yet!", ephemeral=True)
             
         log_channel = interaction.guild.get_channel(log_channel_id)
         if not log_channel:
-            return await interaction.response.send_message("❌ Request log channel is missing or deleted. Contact admins.", ephemeral=True)
+            return await interaction.response.send_message("❌ Request log channel is missing or deleted.", ephemeral=True)
             
         embed = discord.Embed(
-            title="📩 New Request Received",
+            title=f"📩 New Request (Panel {self.panel_id})",
             color=discord.Color.green(),
             timestamp=datetime.datetime.now()
         )
@@ -119,25 +118,31 @@ class DynamicRequestModal(Modal):
             await interaction.response.send_message("❌ Bot doesn't have permission to send messages in the log channel.", ephemeral=True)
 
 class RequestPanelView(View):
-    def __init__(self, btn_text: str, btn_emoji: str):
+    def __init__(self, panel_id: str, btn_text: str = "Submit", btn_emoji: str = "📩"):
         super().__init__(timeout=None)
+        self.panel_id = panel_id
+        
         btn = Button(
-            label=btn_text if btn_text else "Submit Request", 
-            emoji=btn_emoji if btn_emoji else "📩", 
+            label=btn_text, 
+            emoji=btn_emoji, 
             style=discord.ButtonStyle.primary, 
-            custom_id="persistent_request_btn"
+            custom_id=f"req_panel_btn_{panel_id}" # পার্মানেন্ট আইডি
         )
-        async def btn_callback(interaction: discord.Interaction):
-            await interaction.response.send_modal(DynamicRequestModal(str(interaction.guild.id)))
-        btn.callback = btn_callback
+        btn.callback = self.btn_callback
         self.add_item(btn)
+        
+    async def btn_callback(self, interaction: discord.Interaction):
+        # Modal কল করার আগে defer করা যায় না, তাই সরাসরি send_modal করতে হবে
+        await interaction.response.send_modal(DynamicRequestModal(str(interaction.guild.id), self.panel_id))
 
 # ==========================================
 # 2. ADMIN DASHBOARD MODALS & VIEWS
 # ==========================================
 class EditPanelModal(Modal):
-    def __init__(self, current_data: dict):
-        super().__init__(title="📝 Edit Request Panel")
+    def __init__(self, panel_id: str, current_data: dict):
+        super().__init__(title=f"📝 Edit Request Panel {panel_id}")
+        self.panel_id = panel_id
+        
         self.title_input = TextInput(label="Panel Title", default=current_data.get("title", ""), required=True)
         self.desc_input = TextInput(label="Panel Description", style=discord.TextStyle.paragraph, default=current_data.get("desc", ""), required=True)
         self.btn_text = TextInput(label="Button Text", default=current_data.get("btn_text", "Submit Request"), required=True, max_length=80)
@@ -154,40 +159,24 @@ class EditPanelModal(Modal):
         data = load_data()
         guild_id = str(interaction.guild.id)
         
-        data[guild_id]["panel"]["title"] = self.title_input.value
-        data[guild_id]["panel"]["desc"] = self.desc_input.value
-        data[guild_id]["panel"]["btn_text"] = self.btn_text.value
-        data[guild_id]["panel"]["btn_emoji"] = self.btn_emoji.value
-        data[guild_id]["panel"]["image"] = self.image_url.value.strip()
+        data[guild_id]["panels"][self.panel_id]["title"] = self.title_input.value
+        data[guild_id]["panels"][self.panel_id]["desc"] = self.desc_input.value
+        data[guild_id]["panels"][self.panel_id]["btn_text"] = self.btn_text.value
+        data[guild_id]["panels"][self.panel_id]["btn_emoji"] = self.btn_emoji.value
+        data[guild_id]["panels"][self.panel_id]["image"] = self.image_url.value.strip()
         
         save_data(data)
-        await interaction.response.send_message("✅ Panel details & GIF updated successfully!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Panel {self.panel_id} details & GIF updated successfully!", ephemeral=True)
 
 class EditFieldModal(Modal):
-    def __init__(self, field_index: int, current_field_data: dict):
-        super().__init__(title=f"⚙️ Edit Form Field {field_index + 1}")
+    def __init__(self, panel_id: str, field_index: int, current_field_data: dict):
+        super().__init__(title=f"⚙️ Edit Field {field_index + 1} (Panel {panel_id})")
+        self.panel_id = panel_id
         self.field_index = field_index
         
-        self.label_input = TextInput(
-            label="Question / Field Title (Leave empty to remove)", 
-            placeholder="e.g. What is your Minecraft IGN?", 
-            default=current_field_data.get("label", ""), 
-            required=False,
-            max_length=45
-        )
-        self.placeholder_input = TextInput(
-            label="Placeholder (Optional)", 
-            placeholder="e.g. Type your name here...", 
-            default=current_field_data.get("placeholder", ""), 
-            required=False,
-            max_length=100
-        )
-        self.required_input = TextInput(
-            label="Is it required? (Type 'yes' or 'no')", 
-            default="yes" if current_field_data.get("required", True) else "no", 
-            required=True,
-            max_length=3
-        )
+        self.label_input = TextInput(label="Question (Leave empty to remove)", default=current_field_data.get("label", ""), required=False, max_length=45)
+        self.placeholder_input = TextInput(label="Placeholder (Optional)", default=current_field_data.get("placeholder", ""), required=False, max_length=100)
+        self.required_input = TextInput(label="Is it required? (Type 'yes' or 'no')", default="yes" if current_field_data.get("required", True) else "no", required=True, max_length=3)
         
         self.add_item(self.label_input)
         self.add_item(self.placeholder_input)
@@ -199,95 +188,126 @@ class EditFieldModal(Modal):
         is_req = self.required_input.value.strip().lower() == "yes"
         
         if not self.label_input.value.strip():
-            data[guild_id]["fields"][self.field_index] = {}
-            msg = f"🗑️ Field {self.field_index + 1} has been removed/cleared."
+            data[guild_id]["panels"][self.panel_id]["fields"][self.field_index] = {}
+            msg = f"🗑️ Field {self.field_index + 1} removed from Panel {self.panel_id}."
         else:
-            data[guild_id]["fields"][self.field_index] = {
+            data[guild_id]["panels"][self.panel_id]["fields"][self.field_index] = {
                 "label": self.label_input.value.strip(),
                 "placeholder": self.placeholder_input.value.strip(),
                 "required": is_req
             }
-            msg = f"✅ Field {self.field_index + 1} updated successfully!"
+            msg = f"✅ Field {self.field_index + 1} updated on Panel {self.panel_id}!"
             
         save_data(data)
         await interaction.response.send_message(msg, ephemeral=True)
 
-class DashboardView(View):
-    def __init__(self):
+# ----------------- PANEL SPECIFIC DASHBOARD -----------------
+class PanelEditView(View):
+    def __init__(self, panel_id: str):
         super().__init__(timeout=None)
+        self.panel_id = panel_id
         
-        # 1. Edit Panel
+        # 1. Edit Panel Data
         btn_edit = Button(label="📝 Edit Panel Text & GIF", style=discord.ButtonStyle.primary, row=0)
         async def edit_panel_callback(interaction: discord.Interaction):
             data = ensure_guild_data(str(interaction.guild.id))
-            await interaction.response.send_modal(EditPanelModal(data["panel"]))
+            panel_data = data["panels"][self.panel_id]
+            await interaction.response.send_modal(EditPanelModal(self.panel_id, panel_data))
         btn_edit.callback = edit_panel_callback
         self.add_item(btn_edit)
         
-        # 2. Send Panel (With Defer to stop timeout)
+        # 2. Send Panel (With Timeout Fix)
         btn_send = Button(label="🚀 Send Panel", style=discord.ButtonStyle.success, row=0)
         async def send_callback(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True) # Tells Discord to wait (stops timeout)
+            await interaction.response.defer(ephemeral=True) # টাইমআউট ঠেকানোর জন্য defer
             
-            data = load_data().get(str(interaction.guild.id), {})
-            panel_data = data.get("panel", {})
+            data = load_data().get(str(interaction.guild.id), {}).get("panels", {}).get(self.panel_id, {})
             target_id = data.get("target_channel_id")
             
             target = interaction.guild.get_channel(target_id) if target_id else interaction.channel
             if not target: target = interaction.channel
             
             embed = discord.Embed(
-                title=panel_data.get("title", "Server Request"),
-                description=panel_data.get("desc", "Click to submit."),
+                title=data.get("title", f"Request Panel {self.panel_id}"),
+                description=data.get("desc", "Click to submit."),
                 color=discord.Color.blurple()
             )
             
-            image_url = panel_data.get("image", "")
-            if image_url and image_url.startswith("http"):
-                embed.set_image(url=image_url)
+            img = data.get("image", "")
+            if img and img.startswith("http"):
+                embed.set_image(url=img)
             
-            view = RequestPanelView(panel_data.get("btn_text"), panel_data.get("btn_emoji"))
+            view = RequestPanelView(self.panel_id, data.get("btn_text", "Submit"), data.get("btn_emoji", "📩"))
             
             try:
                 await target.send(embed=embed, view=view)
-                await interaction.followup.send(f"✅ Request Panel successfully sent to {target.mention}!", ephemeral=True)
+                await interaction.followup.send(f"✅ Panel {self.panel_id} successfully sent to {target.mention}!", ephemeral=True)
             except discord.Forbidden:
                 await interaction.followup.send(f"❌ Missing permissions to send messages in {target.mention}.", ephemeral=True)
         btn_send.callback = send_callback
         self.add_item(btn_send)
 
-        # 3. Setup Questions Modal
+        # 3. Back Button
+        btn_back = Button(label="🔙 Back", style=discord.ButtonStyle.danger, row=0)
+        async def back_callback(interaction: discord.Interaction):
+            embed = discord.Embed(title="⚙️ Advanced Request Master Dashboard", description="Select a Panel from 1 to 5 to configure it.", color=discord.Color.dark_teal())
+            await interaction.response.edit_message(embed=embed, view=MasterDashboardView())
+        btn_back.callback = back_callback
+        self.add_item(btn_back)
+
+        # 4. Setup Questions Modal
         options = [discord.SelectOption(label=f"Edit Form Question {i+1}", value=str(i), emoji="⚙️") for i in range(5)]
         field_select = Select(placeholder="⚙️ Setup Modal Questions (Max 5)...", options=options, row=1)
         async def field_select_callback(interaction: discord.Interaction):
             idx = int(field_select.values[0])
             data = ensure_guild_data(str(interaction.guild.id))
-            current_field = data["fields"][idx]
-            await interaction.response.send_modal(EditFieldModal(idx, current_field))
+            current_field = data["panels"][self.panel_id]["fields"][idx]
+            await interaction.response.send_modal(EditFieldModal(self.panel_id, idx, current_field))
         field_select.callback = field_select_callback
         self.add_item(field_select)
 
-        # 4. Select Log Channel (With Defer)
+        # 5. Log Channel (With Timeout Fix)
         log_select = ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="📜 Select Log Channel (Where requests go)", row=2)
         async def log_callback(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             data = load_data()
-            data[str(interaction.guild.id)]["log_channel_id"] = log_select.values[0].id
+            data[str(interaction.guild.id)]["panels"][self.panel_id]["log_channel_id"] = log_select.values[0].id
             save_data(data)
-            await interaction.followup.send(f"✅ Request Log Channel set to {log_select.values[0].mention}", ephemeral=True)
+            await interaction.followup.send(f"✅ Log Channel for Panel {self.panel_id} set to {log_select.values[0].mention}", ephemeral=True)
         log_select.callback = log_callback
         self.add_item(log_select)
 
-        # 5. Select Target Channel (With Defer)
+        # 6. Target Channel (With Timeout Fix)
         target_select = ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="📍 Set Target Channel (Optional)", row=3)
         async def target_callback(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             data = load_data()
-            data[str(interaction.guild.id)]["target_channel_id"] = target_select.values[0].id
+            data[str(interaction.guild.id)]["panels"][self.panel_id]["target_channel_id"] = target_select.values[0].id
             save_data(data)
-            await interaction.followup.send(f"✅ Target channel set to {target_select.values[0].mention}. Now click '🚀 Send Panel' to deploy.", ephemeral=True)
+            await interaction.followup.send(f"✅ Target channel for Panel {self.panel_id} set. Click '🚀 Send Panel' to deploy.", ephemeral=True)
         target_select.callback = target_callback
         self.add_item(target_select)
+
+# ----------------- MASTER DASHBOARD -----------------
+class MasterDashboardView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        
+        options = [discord.SelectOption(label=f"Request Panel {i}", value=str(i), description=f"Configure settings for Panel {i}") for i in range(1, 6)]
+        select = Select(placeholder="🎛️ Select a Request Panel to Configure...", options=options)
+        
+        async def panel_select_callback(interaction: discord.Interaction):
+            panel_id = select.values[0]
+            ensure_guild_data(str(interaction.guild.id))
+            embed = discord.Embed(
+                title=f"⚙️ Configuring Request Panel {panel_id}", 
+                description="Setup your questions, edit panel text, and choose where to send it.", 
+                color=discord.Color.blue()
+            )
+            await interaction.response.edit_message(embed=embed, view=PanelEditView(panel_id))
+            
+        select.callback = panel_select_callback
+        self.add_item(select)
 
 
 # ==========================================
@@ -298,25 +318,25 @@ class RequestSystemCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        self.bot.add_view(RequestPanelView("Submit", "📩"))
+        # রিস্টার্ট হলেও যাতে ১ থেকে ৫ পর্যন্ত সব প্যানেলের বাটন কাজ করে, তার জন্য ভিউ রেজিস্টার করা হচ্ছে
+        for i in range(1, 6):
+            self.bot.add_view(RequestPanelView(str(i)))
 
-    @app_commands.command(name="request_dashboard", description="🛠️ Configure the Advanced Request System")
+    @app_commands.command(name="request_dashboard", description="🛠️ Configure the Multi-Panel Request System")
     @app_commands.checks.has_permissions(administrator=True)
     async def request_dashboard(self, interaction: discord.Interaction):
         ensure_guild_data(str(interaction.guild.id))
         embed = discord.Embed(
             title="⚙️ Advanced Request Master Dashboard",
             description=(
-                "Welcome to the Request System Setup!\n\n"
-                "**1. Edit Panel Text & GIF:** Change the message, button, and image.\n"
-                "**2. Setup Questions:** Use the dropdown to set up to 5 questions users have to answer.\n"
-                "**3. Log Channel:** Select where the submitted requests will be posted.\n"
-                "**4. Target Channel:** Optional. Select where to send the panel, then click **Send Panel**."
+                "Welcome to the Multi-Panel Request System Setup!\n\n"
+                "Use the dropdown below to select **Panel 1 to 5**.\n"
+                "After selecting a panel, you can set its own specific text, GIF, questions, and channels."
             ),
             color=discord.Color.dark_teal()
         )
-        await interaction.response.send_message(embed=embed, view=DashboardView(), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=MasterDashboardView(), ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(RequestSystemCog(bot))
-            
+    
