@@ -126,13 +126,12 @@ class RequestPanelView(View):
             label=btn_text, 
             emoji=btn_emoji, 
             style=discord.ButtonStyle.primary, 
-            custom_id=f"req_panel_btn_{panel_id}" # পার্মানেন্ট আইডি
+            custom_id=f"req_panel_btn_{panel_id}" 
         )
         btn.callback = self.btn_callback
         self.add_item(btn)
         
     async def btn_callback(self, interaction: discord.Interaction):
-        # Modal কল করার আগে defer করা যায় না, তাই সরাসরি send_modal করতে হবে
         await interaction.response.send_modal(DynamicRequestModal(str(interaction.guild.id), self.panel_id))
 
 # ==========================================
@@ -211,15 +210,16 @@ class PanelEditView(View):
         btn_edit = Button(label="📝 Edit Panel Text & GIF", style=discord.ButtonStyle.primary, row=0)
         async def edit_panel_callback(interaction: discord.Interaction):
             data = ensure_guild_data(str(interaction.guild.id))
-            panel_data = data["panels"][self.panel_id]
+            # FIX: Properly added guild_id to access panels correctly
+            panel_data = data[str(interaction.guild.id)]["panels"][self.panel_id]
             await interaction.response.send_modal(EditPanelModal(self.panel_id, panel_data))
         btn_edit.callback = edit_panel_callback
         self.add_item(btn_edit)
         
-        # 2. Send Panel (With Timeout Fix)
+        # 2. Send Panel 
         btn_send = Button(label="🚀 Send Panel", style=discord.ButtonStyle.success, row=0)
         async def send_callback(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True) # টাইমআউট ঠেকানোর জন্য defer
+            await interaction.response.defer(ephemeral=True) 
             
             data = load_data().get(str(interaction.guild.id), {}).get("panels", {}).get(self.panel_id, {})
             target_id = data.get("target_channel_id")
@@ -261,12 +261,13 @@ class PanelEditView(View):
         async def field_select_callback(interaction: discord.Interaction):
             idx = int(field_select.values[0])
             data = ensure_guild_data(str(interaction.guild.id))
-            current_field = data["panels"][self.panel_id]["fields"][idx]
+            # FIX: Properly added guild_id to access fields correctly
+            current_field = data[str(interaction.guild.id)]["panels"][self.panel_id]["fields"][idx]
             await interaction.response.send_modal(EditFieldModal(self.panel_id, idx, current_field))
         field_select.callback = field_select_callback
         self.add_item(field_select)
 
-        # 5. Log Channel (With Timeout Fix)
+        # 5. Log Channel 
         log_select = ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="📜 Select Log Channel (Where requests go)", row=2)
         async def log_callback(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
@@ -277,7 +278,7 @@ class PanelEditView(View):
         log_select.callback = log_callback
         self.add_item(log_select)
 
-        # 6. Target Channel (With Timeout Fix)
+        # 6. Target Channel 
         target_select = ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="📍 Set Target Channel (Optional)", row=3)
         async def target_callback(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
@@ -318,7 +319,6 @@ class RequestSystemCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        # রিস্টার্ট হলেও যাতে ১ থেকে ৫ পর্যন্ত সব প্যানেলের বাটন কাজ করে, তার জন্য ভিউ রেজিস্টার করা হচ্ছে
         for i in range(1, 6):
             self.bot.add_view(RequestPanelView(str(i)))
 
@@ -339,4 +339,4 @@ class RequestSystemCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(RequestSystemCog(bot))
-    
+                               
