@@ -31,19 +31,32 @@ def save_config(data):
 
 def ensure_guild_data(guild_id: str):
     config = load_config()
+    changed = False 
+    
     if guild_id not in config:
-        config[guild_id] = {
-            "ticket_count": 0,
-            "select_panel": {
-                "title": "🎫 Support Panel (Select Menu)",
-                "description": "Please select a category below.",
-                "categories": [],
-                "staff_roles": [],
-                "log_channel_id": None
-            },
-            "button_panels": {}
+        config[guild_id] = {}
+        changed = True
+
+    if "ticket_count" not in config[guild_id]:
+        config[guild_id]["ticket_count"] = 0
+        changed = True
+
+    if "select_panel" not in config[guild_id]:
+        config[guild_id]["select_panel"] = {
+            "title": "🎫 Support Panel (Select Menu)",
+            "description": "Please select a category below.",
+            "categories": [],
+            "staff_roles": [],
+            "log_channel_id": None
         }
-        for i in range(1, 6):
+        changed = True
+
+    if "button_panels" not in config[guild_id]:
+        config[guild_id]["button_panels"] = {}
+        changed = True
+
+    for i in range(1, 6):
+        if str(i) not in config[guild_id]["button_panels"]:
             config[guild_id]["button_panels"][str(i)] = {
                 "title": f"🔘 Support Panel (Buttons) - {i}",
                 "description": "Click a button to open a ticket.",
@@ -51,7 +64,11 @@ def ensure_guild_data(guild_id: str):
                 "staff_roles": [],
                 "log_channel_id": None
             }
+            changed = True
+            
+    if changed:
         save_config(config)
+        
     return config
 
 # ================= 1. TICKET CREATION LOGIC =================
@@ -104,7 +121,7 @@ async def create_ticket_channel(interaction: discord.Interaction, label: str, em
         await channel.send(content=f"{interaction.user.mention} {' '.join(staff_mentions)}", embed=embed, view=TicketActiveView())
         await interaction.followup.send(f"✅ Ticket Created: {channel.mention}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send("❌ Error: Missing permissions to create channels.", ephemeral=True)
+        await interaction.followup.send("❌ Error: Missing permissions to create channels. Make sure I have 'Manage Channels' permission.", ephemeral=True)
 
 # --- REASON MODAL ---
 class ReasonModal(Modal):
@@ -189,7 +206,6 @@ class TicketConfirmCloseView(View):
         
         config = load_config()
         guild_id = str(interaction.guild.id)
-        # Search for valid log channel among all panels
         log_id = config.get(guild_id, {}).get("select_panel", {}).get("log_channel_id")
         if not log_id:
             for p_id, p_data in config.get(guild_id, {}).get("button_panels", {}).items():
@@ -216,7 +232,7 @@ class TicketActiveView(View):
         super().__init__(timeout=None)
     @discord.ui.button(label="🔒 Close", style=discord.ButtonStyle.danger, custom_id="active_close")
     async def close_btn(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("Are you sure?", view=TicketConfirmCloseView(), ephemeral=False)
+        await interaction.response.send_message("Are you sure you want to close this ticket?", view=TicketConfirmCloseView(), ephemeral=False)
     @discord.ui.button(label="🙋‍♂️ Claim", style=discord.ButtonStyle.success, custom_id="active_claim")
     async def claim_btn(self, interaction: discord.Interaction, button: Button):
         button.disabled = True
@@ -338,7 +354,6 @@ class PanelEditView(View):
         save_config(config)
         await interaction.response.send_message(f"✅ Log channel set.", ephemeral=True)
 
-    # NEW: Send Panel directly from Dashboard (Replaces /ticket_set)
     @discord.ui.select(cls=ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="🚀 SEND PANEL TO CHANNEL...", row=3)
     async def send_panel_select(self, interaction: discord.Interaction, select: ChannelSelect):
         target_channel = select.values[0]
@@ -359,6 +374,31 @@ class PanelEditView(View):
             await interaction.response.send_message(f"✅ Successfully sent the ticket panel to {target_channel.mention}!", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message(f"❌ Missing permissions to send messages in {target_channel.mention}.", ephemeral=True)
+
+    @discord.ui.button(label="🗑️ Reset This Panel", style=discord.ButtonStyle.danger, row=4)
+    async def reset_panel_btn(self, interaction: discord.Interaction, button: Button):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        
+        if self.panel_type == "select":
+            config[guild_id]["select_panel"] = {
+                "title": "🎫 Support Panel (Select Menu)",
+                "description": "Please select a category below.",
+                "categories": [],
+                "staff_roles": [],
+                "log_channel_id": None
+            }
+        else:
+            config[guild_id]["button_panels"][self.panel_id] = {
+                "title": f"🔘 Support Panel (Buttons) - {self.panel_id}",
+                "description": "Click a button to open a ticket.",
+                "buttons": [],
+                "staff_roles": [],
+                "log_channel_id": None
+            }
+            
+        save_config(config)
+        await interaction.response.send_message(f"✅ Panel has been completely reset to default!", ephemeral=True)
 
 
 class MasterDashboardView(View):
@@ -400,6 +440,8 @@ class TicketSystem(commands.Cog):
         if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
             return await interaction.response.send_message("❌ Access Denied.", ephemeral=True)
             
+        ensure_guild_data(str(interaction.guild.id))
+        
         embed = discord.Embed(
             title="🎛️ Ultimate Ticket Master Dashboard",
             description="Welcome to the Advanced Ticket System!\n\n**1. Main Panel (Select Menu):** Use the blue button to configure category-based tickets.\n**2. Button Panels (1-5):** Use the dropdown below to configure the 5 separate button-based panels.\n\n*(Note: You can send panels directly to channels from inside these menus!)*",
