@@ -361,7 +361,7 @@ class AntiNukeCog(commands.Cog):
     # ==========================================
     # CORE ANTI-NUKE PROCESSOR
     # ==========================================
-     async def process_nuke_action(self, guild: discord.Guild, action_type: discord.AuditLogAction, protection_key: str):
+    async def process_nuke_action(self, guild: discord.Guild, action_type: discord.AuditLogAction, protection_key: str):
         config = get_nuke_config(guild.id)
         if not config.get('is_enabled', False) or not config['protections'][protection_key]: return
         await asyncio.sleep(1.5) # API Sync Delay
