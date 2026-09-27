@@ -35,16 +35,18 @@ def get_nuke_config(guild_id: int):
     if g_id not in data:
         data[g_id] = {
             "is_enabled": False,
-            "punishment": "STRIP", # STRIP, KICK, BAN
-            "threshold_count": 3,
-            "threshold_time": 10,
-            "whitelist": [],
+            "whitelisted_users": {},
+            "whitelisted_roles": {},
             "protections": {
                 "ban": True,
                 "channel": True,
                 "role": True,
                 "bot": True,
                 "webhook": True
+            },
+            "nuke_limits": {
+                "max_actions": 3,
+                "time_window": 10
             },
             "anti_spam": {
                 "enabled": False,
@@ -61,10 +63,10 @@ def save_nuke_config(guild_id: int, config: dict):
     save_data(data)
 
 # ---------------------------------------------------------
-# IN-MEMORY TRACKERS (For Nuke & Spam)
+# IN-MEMORY TRACKERS (For Spam & Nuke Limits)
 # ---------------------------------------------------------
-active_strikes = {}  # For Admin Anti-Nuke
-spam_tracker = {}    # For Chat Anti-Spam
+spam_tracker = {}
+nuke_tracker = {}
 
 def add_strike(tracker_dict, guild_id: int, user_id: int, time_window: int) -> int:
     current_time = time.time()
@@ -80,47 +82,80 @@ def add_strike(tracker_dict, guild_id: int, user_id: int, time_window: int) -> i
     tracker_dict[guild_id][user_id].append(current_time)
     return len(tracker_dict[guild_id][user_id])
 
-def clear_strikes(tracker_dict, guild_id: int, user_id: int):
-    if guild_id in tracker_dict and user_id in tracker_dict[guild_id]:
-        tracker_dict[guild_id][user_id] = []
+# ---------------------------------------------------------
+# PERMISSION EVALUATOR (Hybrid System)
+# ---------------------------------------------------------
+# Returns: "WHITELISTED" (Unlimited), "NATIVE" (Rate-Limited), or "DENIED" (Instant Ban)
+def evaluate_permission(member: discord.Member, action_key: str, config: dict) -> str:
+    # 1. Owner and Developer (Unlimited)
+    if member.id == MY_USER_ID or member.id == member.guild.owner_id:
+        return "WHITELISTED"
+        
+    # 2. Check Dashboard Explicit Whitelist (Unlimited)
+    user_id_str = str(member.id)
+    if user_id_str in config.get("whitelisted_users", {}):
+        if config["whitelisted_users"][user_id_str].get(action_key, False):
+            return "WHITELISTED"
+            
+    for role in member.roles:
+        role_id_str = str(role.id)
+        if role_id_str in config.get("whitelisted_roles", {}):
+            if config["whitelisted_roles"][role_id_str].get(action_key, False):
+                return "WHITELISTED"
+                
+    # 3. Check Native Discord Perms (Subject to Limits/Thresholds)
+    perms = member.guild_permissions
+    if action_key == 'ban' and perms.ban_members: return "NATIVE"
+    if action_key == 'channel' and perms.manage_channels: return "NATIVE"
+    if action_key == 'role' and perms.manage_roles: return "NATIVE"
+    if action_key == 'webhook' and perms.manage_webhooks: return "NATIVE"
+    if action_key == 'bot' and (perms.manage_guild or perms.administrator): return "NATIVE"
+        
+    # 4. No Permissions at all (Instant Ban)
+    return "DENIED"
 
 # ---------------------------------------------------------
-# DASHBOARD EMBED GENERATOR
+# EMBED GENERATORS
 # ---------------------------------------------------------
 def get_nuke_embed(config):
-    embed = discord.Embed(title="🛡️ Ultimate Security Dashboard", color=discord.Color.from_str("#2b2d31"))
+    embed = discord.Embed(title="🛡️ Ultimate Hybrid Security Dashboard", color=discord.Color.from_str("#2b2d31"))
     
     status = "✅ Active" if config['is_enabled'] else "❌ Disabled"
-    punish = "🔴 BAN" if config['punishment'] == "BAN" else "🟠 KICK" if config['punishment'] == "KICK" else "🟡 STRIP ROLES"
-    embed.add_field(name="📌 Anti-Nuke Status", value=f"**Status:** {status}\n**Punishment:** {punish}\n**Limit:** {config['threshold_count']} actions in {config['threshold_time']}s", inline=False)
+    limit_info = f"{config['nuke_limits']['max_actions']} actions / {config['nuke_limits']['time_window']}s"
+    
+    embed.add_field(name="📌 Anti-Nuke Status", value=f"**Status:** {status}\n**Punishment:** 🔴 BAN\n**Native Perms Limit:** {limit_info}", inline=False)
     
     p = config['protections']
     p_text = (
-        f"**Mass Ban/Kick:** {'✅' if p['ban'] else '❌'}\n"
-        f"**Channel Nuke:** {'✅' if p['channel'] else '❌'}\n"
-        f"**Role Nuke:** {'✅' if p['role'] else '❌'}\n"
-        f"**Anti-Bot Add:** {'✅' if p['bot'] else '❌'}\n"
-        f"**Anti-Webhook:** {'✅' if p['webhook'] else '❌'}"
+        f"**Anti Mass Ban/Kick:** {'✅' if p['ban'] else '❌'}\n"
+        f"**Anti Channel Nuke:** {'✅' if p['channel'] else '❌'}\n"
+        f"**Anti Role Nuke:** {'✅' if p['role'] else '❌'}\n"
+        f"**Anti Bot & Apps:** {'✅' if p['bot'] else '❌'}\n"
+        f"**Anti Webhook Nuke:** {'✅' if p['webhook'] else '❌'}"
     )
-    embed.add_field(name="🔒 Nuke Protections", value=p_text, inline=True)
+    embed.add_field(name="🔒 Global Protections", value=p_text, inline=True)
     
     s = config['anti_spam']
     spam_stat = "✅ Active" if s['enabled'] else "❌ Disabled"
-    embed.add_field(name="💬 Anti-Spam", value=f"**Status:** {spam_stat}\n**Limit:** {s['max_msg']} msgs in {s['time_window']}s\n**Action:** 5 Min Timeout", inline=True)
+    embed.add_field(name="💬 Anti-Spam", value=f"**Status:** {spam_stat}\n**Limit:** {s['max_msg']} msgs / {s['time_window']}s\n**Action:** 5 Min Timeout", inline=True)
     
-    wl_count = len(config['whitelist'])
-    embed.add_field(name="🛡️ Whitelist", value=f"**{wl_count}** Users bypassed\n*(Owners & Dev auto-bypassed)*", inline=False)
+    embed.add_field(name="🛡️ Trust Levels", value="🟩 **Dashboard Whitelist:** Unlimited bypass.\n🟨 **Discord Admins:** Rate-limited by config.\n🟥 **No Perms:** Instant Ban.", inline=False)
     
     return embed
 
+def get_permissions_embed(target_name, target_type):
+    embed = discord.Embed(title=f"⚙️ Configure Permissions for {target_type.capitalize()}", color=discord.Color.blue())
+    embed.description = f"**Target:** {target_name}\n\nForce allow specific actions (Bypasses all limits & thresholds).\n🟩 = Unlimited Access\n🟥 = Default (Relies on Discord Perms limits)"
+    return embed
+
 # ---------------------------------------------------------
-# MODALS & VIEWS
+# MODALS
 # ---------------------------------------------------------
-class ProtectionsModal(discord.ui.Modal, title="🔒 Nuke Protections (yes/no)"):
+class ProtectionsModal(discord.ui.Modal, title="🔒 Global Protections (yes/no)"):
     p_ban = discord.ui.TextInput(label="Anti Mass Ban & Kick", style=discord.TextStyle.short)
     p_chan = discord.ui.TextInput(label="Anti Channel Delete", style=discord.TextStyle.short)
     p_role = discord.ui.TextInput(label="Anti Role Delete", style=discord.TextStyle.short)
-    p_bot = discord.ui.TextInput(label="Anti Malicious Bot Add", style=discord.TextStyle.short)
+    p_bot = discord.ui.TextInput(label="Anti Malicious Bot/App", style=discord.TextStyle.short)
     p_web = discord.ui.TextInput(label="Anti Webhook Create", style=discord.TextStyle.short)
 
     def __init__(self, guild_id, config):
@@ -143,23 +178,24 @@ class ProtectionsModal(discord.ui.Modal, title="🔒 Nuke Protections (yes/no)")
         save_nuke_config(self.guild_id, self.config)
         await interaction.response.edit_message(embed=get_nuke_embed(self.config), view=AntiNukeView(self.guild_id))
 
-class NukeLimitsModal(discord.ui.Modal, title="⚙️ Nuke Limits (Threshold)"):
-    act_count = discord.ui.TextInput(label="Max Actions Allowed", style=discord.TextStyle.short)
+class NukeLimitsModal(discord.ui.Modal, title="⚙️ Native Admin Limits"):
+    act_count = discord.ui.TextInput(label="Max Actions (before ban)", style=discord.TextStyle.short)
     time_win = discord.ui.TextInput(label="Time Window (Seconds)", style=discord.TextStyle.short)
 
     def __init__(self, guild_id, config):
         super().__init__()
         self.guild_id = guild_id
         self.config = config
-        self.act_count.default = str(config['threshold_count'])
-        self.time_win.default = str(config['threshold_time'])
+        l = config.get('nuke_limits', {"max_actions": 3, "time_window": 10})
+        self.act_count.default = str(l['max_actions'])
+        self.time_win.default = str(l['time_window'])
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            self.config['threshold_count'] = int(self.act_count.value)
-            self.config['threshold_time'] = int(self.time_win.value)
+            self.config['nuke_limits']['max_actions'] = int(self.act_count.value)
+            self.config['nuke_limits']['time_window'] = int(self.time_win.value)
+            save_nuke_config(self.guild_id, self.config)
         except: pass
-        save_nuke_config(self.guild_id, self.config)
         await interaction.response.edit_message(embed=get_nuke_embed(self.config), view=AntiNukeView(self.guild_id))
 
 class AntiSpamModal(discord.ui.Modal, title="💬 Anti-Spam Settings"):
@@ -185,50 +221,88 @@ class AntiSpamModal(discord.ui.Modal, title="💬 Anti-Spam Settings"):
         save_nuke_config(self.guild_id, self.config)
         await interaction.response.edit_message(embed=get_nuke_embed(self.config), view=AntiNukeView(self.guild_id))
 
-
-class PunishmentSelectView(discord.ui.View):
-    def __init__(self, guild_id: int):
+# ---------------------------------------------------------
+# UI VIEWS (DASHBOARD & PERMISSIONS)
+# ---------------------------------------------------------
+class GranularPermissionsView(discord.ui.View):
+    def __init__(self, guild_id: int, target_id: str, target_type: str, target_name: str):
         super().__init__(timeout=None)
         self.guild_id = guild_id
+        self.target_id = target_id
+        self.target_type = target_type
+        self.target_name = target_name
+        self.db_key = "whitelisted_users" if target_type == "user" else "whitelisted_roles"
+        self.update_buttons()
 
-    @discord.ui.select(
-        placeholder="Choose Nuke Auto-Punishment",
-        options=[
-            discord.SelectOption(label="Strip Roles", description="Removes all admin roles (Safest)", value="STRIP", emoji="🟡"),
-            discord.SelectOption(label="Kick", description="Kicks the user from server", value="KICK", emoji="🟠"),
-            discord.SelectOption(label="Ban", description="Bans the user permanently", value="BAN", emoji="🔴")
-        ], row=0)
-    async def select_punish(self, interaction: discord.Interaction, select: discord.ui.Select):
+    def update_buttons(self):
         config = get_nuke_config(self.guild_id)
-        config['punishment'] = select.values[0]
+        if self.target_id not in config[self.db_key]:
+            config[self.db_key][self.target_id] = {"ban": False, "channel": False, "role": False, "bot": False, "webhook": False}
+        perms = config[self.db_key][self.target_id]
+
+        self.btn_ban.style = discord.ButtonStyle.success if perms.get("ban") else discord.ButtonStyle.danger
+        self.btn_channel.style = discord.ButtonStyle.success if perms.get("channel") else discord.ButtonStyle.danger
+        self.btn_role.style = discord.ButtonStyle.success if perms.get("role") else discord.ButtonStyle.danger
+        self.btn_bot.style = discord.ButtonStyle.success if perms.get("bot") else discord.ButtonStyle.danger
+        self.btn_webhook.style = discord.ButtonStyle.success if perms.get("webhook") else discord.ButtonStyle.danger
+
+    async def toggle_perm(self, interaction: discord.Interaction, perm_key: str):
+        config = get_nuke_config(self.guild_id)
+        current = config[self.db_key][self.target_id].get(perm_key, False)
+        config[self.db_key][self.target_id][perm_key] = not current
         save_nuke_config(self.guild_id, config)
-        await interaction.response.edit_message(embed=get_nuke_embed(config), view=AntiNukeView(self.guild_id))
+        self.update_buttons()
+        await interaction.response.edit_message(view=self)
 
-class WhitelistUserView(discord.ui.View):
-    def __init__(self, guild_id: int):
+    @discord.ui.button(label="Force Allow Ban", custom_id="perm_ban", row=0)
+    async def btn_ban(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "ban")
+    @discord.ui.button(label="Force Allow Channel", custom_id="perm_channel", row=0)
+    async def btn_channel(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "channel")
+    @discord.ui.button(label="Force Allow Role", custom_id="perm_role", row=0)
+    async def btn_role(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "role")
+    @discord.ui.button(label="Force Allow Bots", custom_id="perm_bot", row=1)
+    async def btn_bot(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "bot")
+    @discord.ui.button(label="Force Allow Webhook", custom_id="perm_webhook", row=1)
+    async def btn_webhook(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "webhook")
+    
+    @discord.ui.button(label="⬅️ Back to Dashboard", style=discord.ButtonStyle.secondary, row=2)
+    async def btn_back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=get_nuke_embed(get_nuke_config(self.guild_id)), view=AntiNukeView(self.guild_id))
+
+class TargetSelectView(discord.ui.View):
+    def __init__(self, guild_id: int, select_type: str):
         super().__init__(timeout=None)
         self.guild_id = guild_id
-
-    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Select a User to Add/Remove from Whitelist", row=0)
-    async def select_user(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
-        config = get_nuke_config(self.guild_id)
-        user_id = str(select.values[0].id)
         
-        if user_id in config['whitelist']:
-            config['whitelist'].remove(user_id)
-            msg = f"➖ Removed <@{user_id}> from Whitelist."
+        if select_type == "user":
+            select = discord.ui.UserSelect(placeholder="Search and select a User...", row=0)
+            select.callback = self.user_callback
         else:
-            config['whitelist'].append(user_id)
-            msg = f"➕ Added <@{user_id}> to Whitelist."
+            select = discord.ui.RoleSelect(placeholder="Search and select a Role...", row=0)
+            select.callback = self.role_callback
             
-        save_nuke_config(self.guild_id, config)
-        await interaction.response.edit_message(embed=get_nuke_embed(config), view=AntiNukeView(self.guild_id))
-        await interaction.followup.send(msg, ephemeral=True)
+        self.add_item(select)
+        
+        btn_back = discord.ui.Button(label="⬅️ Back", style=discord.ButtonStyle.secondary, row=1)
+        btn_back.callback = self.back_callback
+        self.add_item(btn_back)
+
+    async def user_callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            embed=get_permissions_embed(f"<@{interaction.data['values'][0]}>", "user"), 
+            view=GranularPermissionsView(self.guild_id, str(interaction.data['values'][0]), "user", f"<@{interaction.data['values'][0]}>")
+        )
+
+    async def role_callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            embed=get_permissions_embed(f"<@&{interaction.data['values'][0]}>", "role"), 
+            view=GranularPermissionsView(self.guild_id, str(interaction.data['values'][0]), "role", f"<@&{interaction.data['values'][0]}>")
+        )
+
+    async def back_callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=get_nuke_embed(get_nuke_config(self.guild_id)), view=AntiNukeView(self.guild_id))
 
 
-# ---------------------------------------------------------
-# DASHBOARD VIEW (Compact 2 Rows)
-# ---------------------------------------------------------
 class AntiNukeView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
@@ -242,34 +316,32 @@ class AntiNukeView(discord.ui.View):
             self.btn_toggle.label = "✅ Enable Security"
             self.btn_toggle.style = discord.ButtonStyle.success
 
-    # ROW 0
-    @discord.ui.button(label="🔒 Nuke Protections", style=discord.ButtonStyle.primary, row=0)
-    async def btn_prot(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ProtectionsModal(self.guild_id, get_nuke_config(self.guild_id)))
-
-    @discord.ui.button(label="⚙️ Nuke Limits", style=discord.ButtonStyle.primary, row=0)
-    async def btn_limits(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(NukeLimitsModal(self.guild_id, get_nuke_config(self.guild_id)))
-
-    @discord.ui.button(label="⚖️ Punishment", style=discord.ButtonStyle.primary, row=0)
-    async def btn_punish(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(view=PunishmentSelectView(self.guild_id))
-
-    # ROW 1
-    @discord.ui.button(label="💬 Anti-Spam", style=discord.ButtonStyle.primary, row=1)
-    async def btn_spam(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AntiSpamModal(self.guild_id, get_nuke_config(self.guild_id)))
-
-    @discord.ui.button(label="🛡️ Whitelist", style=discord.ButtonStyle.secondary, row=1)
-    async def btn_wl(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(view=WhitelistUserView(self.guild_id))
-
-    @discord.ui.button(label="Toggle", custom_id="btn_toggle", row=1)
+    @discord.ui.button(label="Toggle Status", custom_id="btn_toggle", row=0)
     async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = get_nuke_config(self.guild_id)
         config['is_enabled'] = not config['is_enabled']
         save_nuke_config(self.guild_id, config)
         await interaction.response.edit_message(embed=get_nuke_embed(config), view=AntiNukeView(self.guild_id))
+
+    @discord.ui.button(label="🔒 Protections", style=discord.ButtonStyle.primary, row=0)
+    async def btn_prot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ProtectionsModal(self.guild_id, get_nuke_config(self.guild_id)))
+
+    @discord.ui.button(label="⚙️ Limits (For Admins)", style=discord.ButtonStyle.primary, row=0)
+    async def btn_limits(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(NukeLimitsModal(self.guild_id, get_nuke_config(self.guild_id)))
+
+    @discord.ui.button(label="👤 User Bypass", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_user_wl(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=None, content="Select a user:", view=TargetSelectView(self.guild_id, "user"))
+
+    @discord.ui.button(label="🛡️ Role Bypass", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_role_wl(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=None, content="Select a role:", view=TargetSelectView(self.guild_id, "role"))
+
+    @discord.ui.button(label="💬 Anti-Spam", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_spam(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AntiSpamModal(self.guild_id, get_nuke_config(self.guild_id)))
 
 
 # ---------------------------------------------------------
@@ -279,85 +351,52 @@ class AntiNukeCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="security_setup", description="Open the Ultimate Anti-Nuke & Spam Dashboard")
+    @app_commands.command(name="security_setup", description="Open the Ultimate Hybrid Anti-Nuke Dashboard")
     @app_commands.default_permissions(administrator=True)
     async def security_setup(self, interaction: discord.Interaction):
-        # ONLY Server Owner AND Developer (You) can open this dashboard
         if interaction.user.id != interaction.guild.owner_id and interaction.user.id != MY_USER_ID:
-            await interaction.response.send_message("❌ Only the Server Owner or Bot Developer can configure Security!", ephemeral=True)
-            return
-            
-        config = get_nuke_config(interaction.guild.id)
-        await interaction.response.send_message(embed=get_nuke_embed(config), view=AntiNukeView(interaction.guild.id), ephemeral=True)
+            return await interaction.response.send_message("❌ Only the Server Owner or Bot Developer can configure Security!", ephemeral=True)
+        await interaction.response.send_message(embed=get_nuke_embed(get_nuke_config(interaction.guild.id)), view=AntiNukeView(interaction.guild.id), ephemeral=True)
 
     # ==========================================
-    # 1. ANTI-SPAM LOGIC 
+    # CORE ANTI-NUKE PROCESSOR
     # ==========================================
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if not message.guild or message.author.id == self.bot.user.id: return
-        
-        config = get_nuke_config(message.guild.id)
-        if not config['is_enabled'] or not config.get('anti_spam', {}).get('enabled', False): return
-        
-        # Bypasses: Whitelist, Server Owner, and YOU (Bot Developer)
-        if str(message.author.id) in config['whitelist'] or message.author.id == message.guild.owner_id or message.author.id == MY_USER_ID: return
-
-        s_config = config['anti_spam']
-        strikes = add_strike(spam_tracker, message.guild.id, message.author.id, s_config['time_window'])
-        
-        if strikes >= s_config['max_msg']:
-            clear_strikes(spam_tracker, message.guild.id, message.author.id)
-            try:
-                await message.channel.purge(limit=s_config['max_msg'], check=lambda m: m.author == message.author)
-                timeout_duration = datetime.timedelta(minutes=5)
-                await message.author.timeout(timeout_duration, reason="Anti-Spam Triggered")
-                alert = await message.channel.send(f"⚠️ {message.author.mention} has been **muted for 5 minutes** for spamming!")
-                await alert.delete(delay=5)
-            except discord.Forbidden:
-                pass
-
-
-    # ==========================================
-    # 2. ANTI-NUKE LOGIC
-    # ==========================================
-    async def process_nuke_action(self, guild: discord.Guild, action_type: discord.AuditLogAction, protection_key: str):
+     async def process_nuke_action(self, guild: discord.Guild, action_type: discord.AuditLogAction, protection_key: str):
         config = get_nuke_config(guild.id)
-        if not config['is_enabled'] or not config['protections'][protection_key]: return
-        await asyncio.sleep(1) # API Delay
+        if not config.get('is_enabled', False) or not config['protections'][protection_key]: return
+        await asyncio.sleep(1.5) # API Sync Delay
         
         try:
             async for entry in guild.audit_logs(limit=1, action=action_type):
                 user = entry.user
+                if not user or user.id == self.bot.user.id: return
+                member = guild.get_member(user.id)
+                if not member: return
+
+                perm_level = evaluate_permission(member, protection_key, config)
+
+                if perm_level == "WHITELISTED":
+                    # Fully trusted user, ignore.
+                    return
                 
-                # Bypasses: Bot itself, Server Owner, YOU (Bot Developer), and Whitelisted users
-                if not user or user.id == self.bot.user.id or user.id == guild.owner_id or user.id == MY_USER_ID or str(user.id) in config['whitelist']: return
+                elif perm_level == "DENIED":
+                    # No permissions at all, instant ban!
+                    try: await member.ban(reason=f"Strict Anti-Nuke: Unauthorized action -> {protection_key}")
+                    except discord.Forbidden: pass
 
-                strikes = add_strike(active_strikes, guild.id, user.id, config['threshold_time'])
-                if strikes >= config['threshold_count']:
-                    await self.execute_nuke_punishment(guild, user, config)
-                    clear_strikes(active_strikes, guild.id, user.id)
+                elif perm_level == "NATIVE":
+                    # Has discord perms, check against rate limit!
+                    limits = config.get('nuke_limits', {"max_actions": 3, "time_window": 10})
+                    strikes = add_strike(nuke_tracker, guild.id, user.id, limits['time_window'])
+                    if strikes >= limits['max_actions']:
+                        try: await member.ban(reason=f"Anti-Nuke: Exceeded {protection_key} limit ({limits['max_actions']} in {limits['time_window']}s)")
+                        except discord.Forbidden: pass
                 break
-        except Exception as e: print(f"Anti-Nuke Error: {e}")
-
-    async def execute_nuke_punishment(self, guild: discord.Guild, user: discord.Member, config: dict):
-        try:
-            member = guild.get_member(user.id)
-            if not member: return
-
-            punishment = config['punishment']
-            reason = "Automated Anti-Nuke System Triggered"
-
-            if punishment == "STRIP":
-                roles = [role for role in member.roles if role.name != "@everyone" and not role.is_default()]
-                await member.remove_roles(*roles, reason=reason)
-            elif punishment == "KICK":
-                await member.kick(reason=reason)
-            elif punishment == "BAN":
-                await member.ban(reason=reason)
         except Exception: pass
 
-    # --- EVENTS MONITORED ---
+    # ==========================================
+    # EVENT LISTENERS
+    # ==========================================
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
         await self.process_nuke_action(channel.guild, discord.AuditLogAction.channel_delete, 'channel')
@@ -374,27 +413,38 @@ class AntiNukeCog(commands.Cog):
     async def on_webhooks_update(self, channel):
         await self.process_nuke_action(channel.guild, discord.AuditLogAction.webhook_create, 'webhook')
 
+    # Anti User-Apps & OAuth2 Integrations
+    @commands.Cog.listener()
+    async def on_integration_create(self, integration):
+        await self.process_nuke_action(integration.guild, discord.AuditLogAction.integration_create, 'bot')
+
+    # Anti Standard Bot Invites
     @commands.Cog.listener()
     async def on_member_join(self, member):
         config = get_nuke_config(member.guild.id)
-        if member.bot and config['is_enabled'] and config['protections']['bot']:
-            await asyncio.sleep(1)
+        if member.bot and config.get('is_enabled', False) and config['protections']['bot']:
+            await asyncio.sleep(1.5)
             async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.bot_add):
                 if entry.target.id == member.id:
                     user = entry.user
+                    inviter = member.guild.get_member(user.id)
+                    if not inviter or inviter.id == self.bot.user.id: return
                     
-                    # Bypasses for Anti-Bot Add
-                    if user.id == member.guild.owner_id or user.id == MY_USER_ID or str(user.id) in config['whitelist']: return
+                    perm_level = evaluate_permission(inviter, 'bot', config)
                     
-                    try: await member.kick(reason="Unauthorized Bot")
-                    except: pass
+                    if perm_level == "DENIED":
+                        try: await member.kick(reason="Unauthorized Bot")
+                        except: pass
+                        try: await inviter.ban(reason="Anti-Nuke: Adding Unverified Bots")
+                        except: pass
                     
-                    strikes = add_strike(active_strikes, member.guild.id, user.id, config['threshold_time'])
-                    if strikes >= config['threshold_count']:
-                        await self.execute_nuke_punishment(member.guild, user, config)
-                        clear_strikes(active_strikes, member.guild.id, user.id)
+                    elif perm_level == "NATIVE":
+                        limits = config.get('nuke_limits', {"max_actions": 3, "time_window": 10})
+                        strikes = add_strike(nuke_tracker, member.guild.id, inviter.id, limits['time_window'])
+                        if strikes >= limits['max_actions']:
+                            try: await inviter.ban(reason="Anti-Nuke: Mass Bot Invite Spam")
+                            except: pass
                     break
 
 async def setup(bot):
     await bot.add_cog(AntiNukeCog(bot))
-    
