@@ -85,13 +85,10 @@ def add_strike(tracker_dict, guild_id: int, user_id: int, time_window: int) -> i
 # ---------------------------------------------------------
 # PERMISSION EVALUATOR (Hybrid System)
 # ---------------------------------------------------------
-# Returns: "WHITELISTED" (Unlimited), "NATIVE" (Rate-Limited), or "DENIED" (Instant Ban)
 def evaluate_permission(member: discord.Member, action_key: str, config: dict) -> str:
-    # 1. Owner and Developer (Unlimited)
     if member.id == MY_USER_ID or member.id == member.guild.owner_id:
         return "WHITELISTED"
         
-    # 2. Check Dashboard Explicit Whitelist (Unlimited)
     user_id_str = str(member.id)
     if user_id_str in config.get("whitelisted_users", {}):
         if config["whitelisted_users"][user_id_str].get(action_key, False):
@@ -103,7 +100,6 @@ def evaluate_permission(member: discord.Member, action_key: str, config: dict) -
             if config["whitelisted_roles"][role_id_str].get(action_key, False):
                 return "WHITELISTED"
                 
-    # 3. Check Native Discord Perms (Subject to Limits/Thresholds)
     perms = member.guild_permissions
     if action_key == 'ban' and perms.ban_members: return "NATIVE"
     if action_key == 'channel' and perms.manage_channels: return "NATIVE"
@@ -111,7 +107,6 @@ def evaluate_permission(member: discord.Member, action_key: str, config: dict) -
     if action_key == 'webhook' and perms.manage_webhooks: return "NATIVE"
     if action_key == 'bot' and (perms.manage_guild or perms.administrator): return "NATIVE"
         
-    # 4. No Permissions at all (Instant Ban)
     return "DENIED"
 
 # ---------------------------------------------------------
@@ -145,7 +140,7 @@ def get_nuke_embed(config):
 
 def get_permissions_embed(target_name, target_type):
     embed = discord.Embed(title=f"⚙️ Configure Permissions for {target_type.capitalize()}", color=discord.Color.blue())
-    embed.description = f"**Target:** {target_name}\n\nForce allow specific actions (Bypasses all limits & thresholds).\n🟩 = Unlimited Access\n🟥 = Default (Relies on Discord Perms limits)"
+    embed.description = f"**Target:** {target_name}\n\nUse the dropdown menu below to explicitly allow actions (Bypasses all limits).\n✅ **Selected** = Unlimited Access\n❌ **Unselected** = Relies on Discord limits"
     return embed
 
 # ---------------------------------------------------------
@@ -232,41 +227,56 @@ class GranularPermissionsView(discord.ui.View):
         self.target_type = target_type
         self.target_name = target_name
         self.db_key = "whitelisted_users" if target_type == "user" else "whitelisted_roles"
-        self.update_buttons()
+        
+        self.setup_menu()
 
-    def update_buttons(self):
+    def setup_menu(self):
         config = get_nuke_config(self.guild_id)
         if self.target_id not in config[self.db_key]:
             config[self.db_key][self.target_id] = {"ban": False, "channel": False, "role": False, "bot": False, "webhook": False}
         perms = config[self.db_key][self.target_id]
 
-        self.btn_ban.style = discord.ButtonStyle.success if perms.get("ban") else discord.ButtonStyle.danger
-        self.btn_channel.style = discord.ButtonStyle.success if perms.get("channel") else discord.ButtonStyle.danger
-        self.btn_role.style = discord.ButtonStyle.success if perms.get("role") else discord.ButtonStyle.danger
-        self.btn_bot.style = discord.ButtonStyle.success if perms.get("bot") else discord.ButtonStyle.danger
-        self.btn_webhook.style = discord.ButtonStyle.success if perms.get("webhook") else discord.ButtonStyle.danger
+        options = [
+            discord.SelectOption(label="Allow Ban & Kick", value="ban", description="Bypass ban/kick limits", default=perms.get("ban", False), emoji="🔨"),
+            discord.SelectOption(label="Allow Manage Channels", value="channel", description="Bypass channel delete limits", default=perms.get("channel", False), emoji="📁"),
+            discord.SelectOption(label="Allow Manage Roles", value="role", description="Bypass role delete limits", default=perms.get("role", False), emoji="🛡️"),
+            discord.SelectOption(label="Allow Adding Bots/Apps", value="bot", description="Bypass bot invite limits", default=perms.get("bot", False), emoji="🤖"),
+            discord.SelectOption(label="Allow Webhooks", value="webhook", description="Bypass webhook limits", default=perms.get("webhook", False), emoji="🔗")
+        ]
 
-    async def toggle_perm(self, interaction: discord.Interaction, perm_key: str):
+        select = discord.ui.Select(
+            placeholder="Select permissions to explicitly allow...",
+            min_values=0,
+            max_values=5,
+            options=options,
+            row=0
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+        
+        btn_back = discord.ui.Button(label="⬅️ Back to Dashboard", style=discord.ButtonStyle.secondary, row=1)
+        btn_back.callback = self.back_callback
+        self.add_item(btn_back)
+
+    async def select_callback(self, interaction: discord.Interaction):
         config = get_nuke_config(self.guild_id)
-        current = config[self.db_key][self.target_id].get(perm_key, False)
-        config[self.db_key][self.target_id][perm_key] = not current
+        selected_values = interaction.data.get('values', [])
+        
+        config[self.db_key][self.target_id] = {
+            "ban": "ban" in selected_values,
+            "channel": "channel" in selected_values,
+            "role": "role" in selected_values,
+            "bot": "bot" in selected_values,
+            "webhook": "webhook" in selected_values
+        }
         save_nuke_config(self.guild_id, config)
-        self.update_buttons()
+        
+        # UI রিফ্রেশ করা হচ্ছে যাতে সিলেকশন সেভ থাকে
+        self.clear_items()
+        self.setup_menu()
         await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="Force Allow Ban", custom_id="perm_ban", row=0)
-    async def btn_ban(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "ban")
-    @discord.ui.button(label="Force Allow Channel", custom_id="perm_channel", row=0)
-    async def btn_channel(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "channel")
-    @discord.ui.button(label="Force Allow Role", custom_id="perm_role", row=0)
-    async def btn_role(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "role")
-    @discord.ui.button(label="Force Allow Bots", custom_id="perm_bot", row=1)
-    async def btn_bot(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "bot")
-    @discord.ui.button(label="Force Allow Webhook", custom_id="perm_webhook", row=1)
-    async def btn_webhook(self, interaction: discord.Interaction, button: discord.ui.Button): await self.toggle_perm(interaction, "webhook")
-    
-    @discord.ui.button(label="⬅️ Back to Dashboard", style=discord.ButtonStyle.secondary, row=2)
-    async def btn_back(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def back_callback(self, interaction: discord.Interaction):
         await interaction.response.edit_message(embed=get_nuke_embed(get_nuke_config(self.guild_id)), view=AntiNukeView(self.guild_id))
 
 class TargetSelectView(discord.ui.View):
@@ -301,7 +311,6 @@ class TargetSelectView(discord.ui.View):
 
     async def back_callback(self, interaction: discord.Interaction):
         await interaction.response.edit_message(embed=get_nuke_embed(get_nuke_config(self.guild_id)), view=AntiNukeView(self.guild_id))
-
 
 class AntiNukeView(discord.ui.View):
     def __init__(self, guild_id: int):
@@ -343,7 +352,6 @@ class AntiNukeView(discord.ui.View):
     async def btn_spam(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(AntiSpamModal(self.guild_id, get_nuke_config(self.guild_id)))
 
-
 # ---------------------------------------------------------
 # MAIN COG & CORE LOGIC
 # ---------------------------------------------------------
@@ -364,7 +372,7 @@ class AntiNukeCog(commands.Cog):
     async def process_nuke_action(self, guild: discord.Guild, action_type: discord.AuditLogAction, protection_key: str):
         config = get_nuke_config(guild.id)
         if not config.get('is_enabled', False) or not config['protections'][protection_key]: return
-        await asyncio.sleep(1.5) # API Sync Delay
+        await asyncio.sleep(1.5)
         
         try:
             async for entry in guild.audit_logs(limit=1, action=action_type):
@@ -376,16 +384,13 @@ class AntiNukeCog(commands.Cog):
                 perm_level = evaluate_permission(member, protection_key, config)
 
                 if perm_level == "WHITELISTED":
-                    # Fully trusted user, ignore.
                     return
                 
                 elif perm_level == "DENIED":
-                    # No permissions at all, instant ban!
                     try: await member.ban(reason=f"Strict Anti-Nuke: Unauthorized action -> {protection_key}")
                     except discord.Forbidden: pass
 
                 elif perm_level == "NATIVE":
-                    # Has discord perms, check against rate limit!
                     limits = config.get('nuke_limits', {"max_actions": 3, "time_window": 10})
                     strikes = add_strike(nuke_tracker, guild.id, user.id, limits['time_window'])
                     if strikes >= limits['max_actions']:
@@ -413,12 +418,10 @@ class AntiNukeCog(commands.Cog):
     async def on_webhooks_update(self, channel):
         await self.process_nuke_action(channel.guild, discord.AuditLogAction.webhook_create, 'webhook')
 
-    # Anti User-Apps & OAuth2 Integrations
     @commands.Cog.listener()
     async def on_integration_create(self, integration):
         await self.process_nuke_action(integration.guild, discord.AuditLogAction.integration_create, 'bot')
 
-    # Anti Standard Bot Invites
     @commands.Cog.listener()
     async def on_member_join(self, member):
         config = get_nuke_config(member.guild.id)
